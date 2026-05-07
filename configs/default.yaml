@@ -1,0 +1,41 @@
+# AIGC Detector Toolkit 默认配置
+
+engine:
+  default: "ensemble"
+  ensemble:
+    fengci_weight: 0.30
+    hc3_weight: 0.20
+    mimo_weight: 0.25
+    binoculars_weight: 0.25
+
+# MiMo API（也可通过环境变量 MIMO_API_KEY / MIMO_API_BASE 设置）
+mimo_api:
+  api_base: "https://token-plan-cn.xiaomimimo.com/v1"
+  api_key: ""
+  model: "mimo-v2.5-pro"
+  strategy: "perplexity"
+
+# Binoculars API（留空则复用 mimo_api 配置）
+binoculars:
+  api_base: ""
+  api_key: ""
+  model: ""
+
+# 文本提取
+extraction:
+  min_paragraph_length: 30
+  skip_headings: true
+  skip_captions: true
+  skip_code_blocks: true
+
+# 判定阈值
+threshold:
+  aigc_threshold: 0.5
+
+# 输出
+output:
+  dir: null
+  json: true
+  text: true
+  console: true
+  verbose: false
