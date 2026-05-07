@@ -37,6 +37,7 @@ from core.evaluation import (
     summarize_engine_metrics,
     write_eval_report,
 )
+from core.refiner import RefinementEngine, generate_refinement_report, export_refined_docx
 
 
 # ── 内置配置 ────────────────────────────────────────────────
@@ -350,6 +351,131 @@ def cmd_eval(args, config):
     return 0
 
 
+def cmd_refine(args, config):
+    """降 AIGC 率：检测 → 润色 → 复测"""
+    from extractors.docx_extractor import extract_from_docx
+    from extractors.md_extractor import extract_from_md
+    from extractors.text_extractor import extract_from_txt
+
+    fp = os.path.abspath(args.file)
+    if not os.path.exists(fp):
+        print(f"❌ 文件不存在: {fp}")
+        return 1
+
+    output_dir = getattr(args, "output", None) or os.path.dirname(os.path.abspath(fp))
+    basename = os.path.splitext(os.path.basename(fp))[0]
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    threshold = getattr(args, "threshold", None) or 0.4
+
+    # ── Step 1: 提取段落 ──
+    print(f"\n📄 文件: {fp}")
+    ext = os.path.splitext(fp)[1].lower()
+    ec = config.get("extraction", {})
+    min_len = ec.get("min_paragraph_length", 30)
+    if ext == ".docx":
+        paragraphs = extract_from_docx(fp, min_length=min_len)
+    elif ext == ".md":
+        paragraphs = extract_from_md(fp, min_length=min_len)
+    elif ext == ".txt":
+        paragraphs = extract_from_txt(fp, min_length=min_len)
+    else:
+        print(f"❌ 不支持: {ext}")
+        return 1
+    print(f"  提取到 {len(paragraphs)} 个段落")
+
+    # ── Step 2: AIGC 检测 ──
+    print("\n🔍 Step 1: AIGC 检测...")
+    engine = build_engine(config, args)
+    texts = [p["text"] for p in paragraphs]
+    results = engine.detect_batch(texts, show_progress=True)
+    engine_status = engine.get_status()
+
+    # 统计
+    valid = [r for r in results if r["label"] != "unknown"]
+    ai_items = [r for r in valid if r["label"] == "ai"]
+    ai_ratio_before = len(ai_items) / len(valid) * 100 if valid else 0
+    print(f"\n  润色前 AIGC 率: {ai_ratio_before:.1f}% ({len(ai_items)}/{len(valid)})")
+
+    # ── Step 3: 润色 ──
+    print(f"\n✏️  Step 2: 润色高风险段落 (阈值 > {threshold*100:.0f}%)...")
+    openai_cfg = config.get("openai_api", {})
+    refiner = RefinementEngine(
+        api_base=openai_cfg.get("api_base", "https://api.openai.com/v1"),
+        api_key=openai_cfg.get("api_key", ""),
+        model=openai_cfg.get("model", "gpt-4o-mini"),
+    )
+
+    if not refiner.api_key:
+        print("  ⚠️  未配置 OPENAI_API_KEY，无法调用 LLM 润色。")
+        print("  请设置环境变量: export OPENAI_API_KEY=your-key")
+        print("  或在 configs/default.yaml 中配置 openai_api.api_key")
+        return 1
+
+    refinement_results = refiner.refine_batch(paragraphs, results, score_threshold=threshold)
+
+    changed = [r for r in refinement_results if r["changed"]]
+    print(f"  已修改 {len(changed)} 段")
+
+    # ── Step 4: 复测 ──
+    if changed and not args.no_recheck:
+        print("\n🔄 Step 3: 复测润色后文本...")
+        refined_texts = [r["refined"] for r in refinement_results]
+        recheck_results = engine.detect_batch(refined_texts, show_progress=True)
+
+        # 更新 after 分数
+        for rr, rc in zip(refinement_results, recheck_results):
+            rr["aigc_after"] = rc.get("aigc_score")
+
+        valid_after = [r for r in recheck_results if r["label"] != "unknown"]
+        ai_after = [r for r in valid_after if r["label"] == "ai"]
+        ai_ratio_after = len(ai_after) / len(valid_after) * 100 if valid_after else 0
+
+        print(f"\n  润色后 AIGC 率: {ai_ratio_after:.1f}% ({len(ai_after)}/{len(valid_after)})")
+        print(f"  降幅: {ai_ratio_before - ai_ratio_after:.1f} 个百分点")
+    else:
+        ai_ratio_after = None
+
+    # ── Step 5: 输出报告 ──
+    aigc_before_summary = {"ai_ratio": ai_ratio_before}
+    aigc_after_summary = {"ai_ratio": ai_ratio_after} if ai_ratio_after is not None else None
+
+    report_path = os.path.join(output_dir, f"降AIGC报告_{basename}_{timestamp}.txt")
+    generate_refinement_report(
+        refinement_results, report_path,
+        aigc_before=aigc_before_summary, aigc_after=aigc_after_summary,
+    )
+    print(f"\n  📝 润色报告: {report_path}")
+
+    docx_path = os.path.join(output_dir, f"润色后文本_{basename}_{timestamp}.docx")
+    export_refined_docx(paragraphs, refinement_results, docx_path)
+    print(f"  📄 润色后DOCX: {docx_path}")
+
+    # JSON 结果
+    json_path = os.path.join(output_dir, f"润色结果_{basename}_{timestamp}.json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "summary": {
+                "total": len(refinement_results),
+                "changed": len(changed),
+                "aigc_before": ai_ratio_before,
+                "aigc_after": ai_ratio_after,
+            },
+            "results": [
+                {k: v for k, v in r.items() if k != "original"}
+                for r in refinement_results
+            ],
+        }, f, ensure_ascii=False, indent=2)
+    print(f"  📊 JSON: {json_path}")
+
+    print("\n" + "=" * 60)
+    print(f"  润色前 AIGC 率: {ai_ratio_before:.1f}%")
+    if ai_ratio_after is not None:
+        print(f"  润色后 AIGC 率: {ai_ratio_after:.1f}%")
+        print(f"  降幅: {ai_ratio_before - ai_ratio_after:.1f} 个百分点")
+    print("=" * 60)
+    return 0
+
+
 def cmd_test(args, config):
     """快速测试：用内置样本验证引擎是否正常"""
     print("\n🧪 快速测试")
@@ -403,6 +529,13 @@ def main():
     p.add_argument("--threshold", type=float, default=None)
     p.add_argument("-o", "--output", default=None, help="JSON 评测报告输出路径")
 
+    p = sub.add_parser("refine", help="降AIGC率: 检测 → 润色 → 复测")
+    p.add_argument("file", help="待处理文件（.docx / .md / .txt）")
+    p.add_argument("--engine", choices=choices, default=None)
+    p.add_argument("--threshold", type=float, default=0.4, help="AIGC分数阈值，高于此值的段落将被润色")
+    p.add_argument("-o", "--output", default=None)
+    p.add_argument("--no-recheck", action="store_true", help="跳过复测步骤")
+
     sub.add_parser("status", help="查看引擎状态")
     p = sub.add_parser("test", help="快速测试")
     p.add_argument("--engine", choices=choices, default=None)
@@ -422,7 +555,7 @@ def main():
     config_path = args.config or os.path.join(PROJECT_ROOT, "configs", "default.yaml")
     config = load_config(config_path)
 
-    cmds = {"detect": cmd_detect, "batch": cmd_batch, "eval": cmd_eval, "status": cmd_status, "test": cmd_test}
+    cmds = {"detect": cmd_detect, "batch": cmd_batch, "eval": cmd_eval, "refine": cmd_refine, "status": cmd_status, "test": cmd_test}
     return cmds[args.command](args, config)
 
 
