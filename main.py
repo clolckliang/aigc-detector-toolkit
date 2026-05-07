@@ -71,10 +71,9 @@ DEFAULT_CONFIG = {
 
 
 def load_config(config_path=None):
-    config = DEFAULT_CONFIG.copy()
-    # 深拷贝嵌套字典
     import copy
     config = copy.deepcopy(DEFAULT_CONFIG)
+    user = {}  # 记录用户配置中的顶层 key，用于兼容判断
 
     if config_path and os.path.exists(config_path):
         try:
@@ -91,7 +90,6 @@ def load_config(config_path=None):
         except Exception as e:
             logging.warning("配置加载失败: %s", e)
 
-    # 环境变量覆盖
     # 兼容旧配置: mimo_api → openai_api
     if "mimo_api" in config and "openai_api" not in user:
         config["openai_api"].update({k: v for k, v in config.pop("mimo_api").items() if v})
