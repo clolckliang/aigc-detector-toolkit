@@ -5,9 +5,11 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+configs/
 *.egg
 .cache/
 eval_reports/
+output/
 .DS_Store
 *.swp
 *.swo
