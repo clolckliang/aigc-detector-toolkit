@@ -1,6 +1,6 @@
 """
-核心检测引擎 - 四引擎融合（自包含版）
-支持 FengCi0 / HC3+m3e / OpenAI 兼容 API / Binoculars
+核心检测引擎 - 多引擎融合（自包含版）
+支持 FengCi0 / HC3+m3e / OpenAI 兼容 API / Binoculars / Local Logprob
 所有引擎代码已内联，无需克隆外部仓库。
 """
 import logging
@@ -11,6 +11,8 @@ from .fengci_adapter import FengCiAdapter
 from .hc3_adapter import HC3Adapter
 from .openai_adapter import OpenAICompatibleAPIDetector
 from .binoculars_adapter import BinocularsAPIDetector
+from .local_logprob_adapter import LocalLogprobDetector
+from .progress import progress_iter
 
 logger = logging.getLogger(__name__)
 
@@ -18,10 +20,10 @@ logger = logging.getLogger(__name__)
 class DetectionEngine:
     """
     AIGC 检测引擎。
-    模式: fengci / hc3 / openai / binoculars / ensemble
+    模式: fengci / hc3 / openai / binoculars / local_logprob / ensemble
     """
 
-    ENGINE_NAMES = ("fengci", "hc3", "openai", "binoculars")
+    ENGINE_NAMES = ("fengci", "hc3", "openai", "binoculars", "local_logprob")
 
     def __init__(
         self,
@@ -34,6 +36,7 @@ class DetectionEngine:
         hc3_weight: float = 0.20,
         openai_weight: float = 0.25,
         binoculars_weight: float = 0.25,
+        local_logprob_weight: float = 0.0,
         # 阈值
         aigc_threshold: float = 0.5,
         # OpenAI 兼容 API
@@ -45,6 +48,14 @@ class DetectionEngine:
         binoculars_api_base: Optional[str] = None,
         binoculars_api_key: Optional[str] = None,
         binoculars_model: str = "gpt-4o-mini",
+        # Local Logprob
+        local_logprob_model: str = "",
+        local_logprob_device: str = "cpu",
+        local_logprob_max_length: int = 512,
+        local_logprob_stride: int = 256,
+        local_logprob_method: str = "logrank",
+        local_logprob_local_files_only: bool = False,
+        api_concurrency: int = 1,
     ):
         self.mode = mode
         self.weights = {
@@ -52,13 +63,18 @@ class DetectionEngine:
             "hc3": hc3_weight,
             "openai": openai_weight,
             "binoculars": binoculars_weight,
+            "local_logprob": local_logprob_weight,
         }
+        if mode in self.weights and self.weights[mode] <= 0:
+            self.weights[mode] = 1.0
         self.aigc_threshold = aigc_threshold
+        self.api_concurrency = max(1, int(api_concurrency or 1))
 
         self.fengci: Optional[FengCiAdapter] = None
         self.hc3: Optional[HC3Adapter] = None
         self.openai: Optional[OpenAICompatibleAPIDetector] = None
         self.binoculars: Optional[BinocularsAPIDetector] = None
+        self.local_logprob: Optional[LocalLogprobDetector] = None
 
         # FengCi0
         if mode in ("fengci", "ensemble"):
@@ -85,6 +101,7 @@ class DetectionEngine:
                 api_key=openai_api_key or "",
                 model=openai_model,
                 strategy=openai_strategy,
+                api_concurrency=self.api_concurrency,
             )
             if not self.openai.available:
                 logger.warning("OpenAI 兼容 API 引擎不可用")
@@ -98,12 +115,29 @@ class DetectionEngine:
                 api_base=binoculars_api_base or openai_api_base or "https://api.openai.com/v1",
                 api_key=binoculars_api_key or openai_api_key or "",
                 model=binoculars_model or openai_model,
+                api_concurrency=self.api_concurrency,
             )
             if not self.binoculars.available:
                 logger.warning("Binoculars 引擎不可用")
                 self.weights["binoculars"] = 0
                 if mode == "binoculars":
                     raise RuntimeError("Binoculars 引擎不可用")
+
+        # Local Logprob
+        if mode == "local_logprob" or (mode == "ensemble" and local_logprob_weight > 0):
+            self.local_logprob = LocalLogprobDetector(
+                model_name_or_path=local_logprob_model,
+                device=local_logprob_device,
+                max_length=local_logprob_max_length,
+                stride=local_logprob_stride,
+                method=local_logprob_method,
+                local_files_only=local_logprob_local_files_only,
+            )
+            if not self.local_logprob.available:
+                logger.warning("Local Logprob 引擎不可用")
+                self.weights["local_logprob"] = 0
+                if mode == "local_logprob":
+                    raise RuntimeError("Local Logprob 引擎不可用")
 
         if mode == "ensemble":
             if sum(1 for v in self.weights.values() if v > 0) == 0:
@@ -148,16 +182,20 @@ class DetectionEngine:
 
         # 先跑支持批量的引擎
         batch_results = {}
-        for name in ("hc3", "openai", "binoculars"):
+        for name in ("hc3", "openai", "binoculars", "local_logprob"):
             obj = getattr(self, name, None)
             if not obj or not obj.available or self.weights.get(name, 0) <= 0:
                 continue
             if hasattr(obj, "detect_batch"):
-                batch_results[name] = obj.detect_batch(texts)
+                try:
+                    batch_results[name] = obj.detect_batch(texts, show_progress=show_progress)
+                except TypeError:
+                    batch_results[name] = obj.detect_batch(texts)
                 logger.info("%s 引擎批量推理完成", name)
 
         results = []
-        for i, text in enumerate(texts):
+        iterable = progress_iter(list(enumerate(texts)), total=total, desc="融合结果") if show_progress else enumerate(texts)
+        for i, text in iterable:
             engine_results = {}
             scores, weights_list = [], []
 
@@ -169,7 +207,7 @@ class DetectionEngine:
                     scores.append(r["aigc_score"])
                     weights_list.append(self.weights["fengci"])
 
-            for name in ("hc3", "openai", "binoculars"):
+            for name in ("hc3", "openai", "binoculars", "local_logprob"):
                 if name in batch_results and batch_results[name][i].get("aigc_score") is not None:
                     r = batch_results[name][i]
                     engine_results[name] = r
@@ -212,7 +250,7 @@ class DetectionEngine:
         }
 
     def get_status(self) -> Dict:
-        status = {"mode": self.mode, "threshold": self.aigc_threshold}
+        status = {"mode": self.mode, "threshold": self.aigc_threshold, "api_concurrency": self.api_concurrency}
         for name in self.ENGINE_NAMES:
             obj = getattr(self, name, None)
             status[f"{name}_available"] = obj.available if obj and hasattr(obj, "available") else False

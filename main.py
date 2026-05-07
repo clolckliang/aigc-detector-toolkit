@@ -2,7 +2,7 @@
 """
 AIGC Detector Toolkit — 中文 AI 生成文本检测工具
 
-四引擎融合检测：FengCi0 特征工程 + HC3 深度学习 + OpenAI 兼容 API logprobs + Binoculars
+多引擎融合检测：FengCi0 特征工程 + HC3 深度学习 + OpenAI 兼容 API logprobs + Binoculars + Local Logprob
 
 用法:
     python main.py detect <file>              检测单个文件
@@ -31,6 +31,12 @@ from extractors.text_extractor import extract_from_txt
 from reporters.console_reporter import print_summary, print_detail
 from reporters.text_reporter import generate_text_report
 from reporters.json_reporter import generate_json_report
+from reporters.html_reporter import generate_html_report
+from core.evaluation import (
+    load_labeled_dataset,
+    summarize_engine_metrics,
+    write_eval_report,
+)
 
 
 # ── 内置配置 ────────────────────────────────────────────────
@@ -43,21 +49,30 @@ DEFAULT_CONFIG = {
             "hc3_weight": 0.20,
             "openai_weight": 0.25,
             "binoculars_weight": 0.25,
+            "local_logprob_weight": 0.0,
         },
     },
     "openai_api": {
         "api_base": os.environ.get(
             "OPENAI_BASE_URL",
-            os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1"),
+            os.environ.get("OPENAI_API_BASE", os.environ.get("MIMO_API_BASE", "https://api.openai.com/v1")),
         ),
-        "api_key": os.environ.get("OPENAI_API_KEY", ""),
-        "model": os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+        "api_key": os.environ.get("OPENAI_API_KEY", os.environ.get("MIMO_API_KEY", "")),
+        "model": os.environ.get("OPENAI_MODEL", os.environ.get("MIMO_MODEL", "gpt-4o-mini")),
         "strategy": "perplexity",
     },
     "binoculars": {
         "api_base": "",
         "api_key": "",
         "model": "",
+    },
+    "local_logprob": {
+        "model_name_or_path": "",
+        "device": "cpu",
+        "max_length": 512,
+        "stride": 256,
+        "method": "logrank",
+        "local_files_only": False,
     },
     "extraction": {
         "min_paragraph_length": 30,
@@ -66,7 +81,8 @@ DEFAULT_CONFIG = {
         "skip_code_blocks": True,
     },
     "threshold": {"aigc_threshold": 0.5},
-    "output": {"dir": None, "json": True, "text": True, "console": True, "verbose": False},
+    "performance": {"api_concurrency": 1},
+    "output": {"dir": None, "json": True, "text": True, "html": True, "console": True, "verbose": False},
 }
 
 
@@ -96,12 +112,18 @@ def load_config(config_path=None):
 
     if os.environ.get("OPENAI_API_KEY"):
         config["openai_api"]["api_key"] = os.environ["OPENAI_API_KEY"]
+    elif os.environ.get("MIMO_API_KEY"):
+        config["openai_api"]["api_key"] = os.environ["MIMO_API_KEY"]
 
     if os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENAI_API_BASE"):
         config["openai_api"]["api_base"] = os.environ.get("OPENAI_BASE_URL") or os.environ["OPENAI_API_BASE"]
+    elif os.environ.get("MIMO_API_BASE"):
+        config["openai_api"]["api_base"] = os.environ["MIMO_API_BASE"]
 
     if os.environ.get("OPENAI_MODEL"):
         config["openai_api"]["model"] = os.environ["OPENAI_MODEL"]
+    elif os.environ.get("MIMO_MODEL"):
+        config["openai_api"]["model"] = os.environ["MIMO_MODEL"]
 
     return config
 
@@ -113,10 +135,15 @@ def _models_dir():
 def build_engine(config, args):
     openai_cfg = config.get("openai_api", {})
     bino_cfg = config.get("binoculars", {})
+    local_cfg = config.get("local_logprob", {})
+    perf_cfg = config.get("performance", {})
     ensemble = config["engine"]["ensemble"]
     models = _models_dir()
     mode = getattr(args, "engine", None) or config["engine"]["default"]
     # openai 模式直接传递
+    threshold = getattr(args, "threshold", None)
+    if threshold is None:
+        threshold = config["threshold"]["aigc_threshold"]
 
     return DetectionEngine(
         mode=mode,
@@ -126,7 +153,8 @@ def build_engine(config, args):
         hc3_weight=ensemble.get("hc3_weight", 0.20),
         openai_weight=ensemble.get("openai_weight", 0.25),
         binoculars_weight=ensemble.get("binoculars_weight", 0.25),
-        aigc_threshold=getattr(args, "threshold", None) or config["threshold"]["aigc_threshold"],
+        local_logprob_weight=ensemble.get("local_logprob_weight", 0.0),
+        aigc_threshold=threshold,
         openai_api_base=openai_cfg.get("api_base"),
         openai_api_key=openai_cfg.get("api_key"),
         openai_model=openai_cfg.get("model", "gpt-4o-mini"),
@@ -134,6 +162,13 @@ def build_engine(config, args):
         binoculars_api_base=bino_cfg.get("api_base") or openai_cfg.get("api_base"),
         binoculars_api_key=bino_cfg.get("api_key") or openai_cfg.get("api_key"),
         binoculars_model=bino_cfg.get("model") or openai_cfg.get("model", "gpt-4o-mini"),
+        local_logprob_model=local_cfg.get("model_name_or_path", ""),
+        local_logprob_device=local_cfg.get("device", "cpu"),
+        local_logprob_max_length=local_cfg.get("max_length", 512),
+        local_logprob_stride=local_cfg.get("stride", 256),
+        local_logprob_method=local_cfg.get("method", "logrank"),
+        local_logprob_local_files_only=local_cfg.get("local_files_only", False),
+        api_concurrency=perf_cfg.get("api_concurrency", 1),
     )
 
 
@@ -196,6 +231,11 @@ def detect_file(engine, file_path, config, args):
         jp = os.path.join(output_dir, f"AIGC检测结果_{basename}_{timestamp}.json")
         generate_json_report(paragraphs, results, engine_status, jp, file_path)
         print(f"  📊 JSON报告: {jp}")
+
+    if config.get("output", {}).get("html", True):
+        hp = os.path.join(output_dir, f"AIGC可视化报告_{basename}_{timestamp}.html")
+        generate_html_report(paragraphs, results, engine_status, hp, file_path)
+        print(f"  🌐 HTML报告: {hp}")
 
     return results
 
@@ -260,12 +300,52 @@ def cmd_status(args, config):
         "hc3": "HC3+m3e 深度学习",
         "openai": "OpenAI 兼容 API logprobs",
         "binoculars": "Binoculars 双模型",
+        "local_logprob": "Local Logprob 本地模型",
     }
     for name, label in labels.items():
         avail = s.get(f"{name}_available", False)
         w = s.get(f"{name}_weight", 0)
         print(f"  {label:20s}  {'✓ 可用' if avail else '✗ 不可用'}  （权重 {w:.0%}）")
     print(f"  判定阈值:         {s['threshold']}")
+    print(f"  API并发数:        {s.get('api_concurrency', 1)}")
+    print("=" * 60)
+    return 0
+
+
+def cmd_eval(args, config):
+    """评测标注集并输出指标与阈值建议"""
+    dataset = load_labeled_dataset(args.dataset)
+    engine = build_engine(config, args)
+    texts = [row["text"] for row in dataset]
+    results = engine.detect_batch(texts, show_progress=True)
+    engine_status = engine.get_status()
+    metrics = summarize_engine_metrics(dataset, results, engine_status["threshold"])
+
+    fused = metrics["fused"]["metrics"]
+    print("\n评测结果")
+    print("=" * 60)
+    print(f"样本数:       {len(dataset)}")
+    print(f"有效检测:     {fused['count']}")
+    print(f"跳过/失败:    {fused['skipped']}")
+    print(f"Accuracy:     {fused['accuracy']:.4f}")
+    print(f"Precision:    {fused['precision']:.4f}")
+    print(f"Recall:       {fused['recall']:.4f}")
+    print(f"F1:           {fused['f1']:.4f}")
+    print(f"AUC:          {fused['auc'] if fused['auc'] is not None else 'N/A'}")
+
+    best = metrics["fused"]["threshold_scan"]["best_f1"]
+    low_fpr = metrics["fused"]["threshold_scan"]["low_fpr"]
+    if best:
+        print(f"最佳F1阈值:   {best['threshold']:.4f} (F1={best['f1']:.4f})")
+    if low_fpr:
+        print(f"低误报阈值:   {low_fpr['threshold']:.4f} (FPR={low_fpr['fpr']:.4f}, Recall={low_fpr['recall']:.4f})")
+
+    output = args.output
+    if not output:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output = os.path.join(PROJECT_ROOT, "eval_reports", f"eval_{timestamp}.json")
+    report_path = write_eval_report(output, args.dataset, dataset, results, engine_status, metrics)
+    print(f"JSON报告:     {report_path}")
     print("=" * 60)
     return 0
 
@@ -303,7 +383,7 @@ def main():
     parser.add_argument("-v", "--verbose", action="store_true", help="逐段详情输出")
 
     sub = parser.add_subparsers(dest="command", help="子命令")
-    choices = ["fengci", "hc3", "openai", "binoculars", "ensemble"]
+    choices = ["fengci", "hc3", "openai", "binoculars", "local_logprob", "ensemble"]
 
     p = sub.add_parser("detect", help="检测单个文件")
     p.add_argument("file", help="待检测文件（.docx / .md / .txt）")
@@ -317,8 +397,16 @@ def main():
     p.add_argument("--threshold", type=float, default=None)
     p.add_argument("-o", "--output", default=None)
 
+    p = sub.add_parser("eval", help="评测 JSONL/CSV 标注集")
+    p.add_argument("dataset", help="评测集路径（.jsonl / .csv，字段: text,label）")
+    p.add_argument("--engine", choices=choices, default=None)
+    p.add_argument("--threshold", type=float, default=None)
+    p.add_argument("-o", "--output", default=None, help="JSON 评测报告输出路径")
+
     sub.add_parser("status", help="查看引擎状态")
-    sub.add_parser("test", help="快速测试")
+    p = sub.add_parser("test", help="快速测试")
+    p.add_argument("--engine", choices=choices, default=None)
+    p.add_argument("--threshold", type=float, default=None)
 
     args = parser.parse_args()
     if not args.command:
@@ -334,7 +422,7 @@ def main():
     config_path = args.config or os.path.join(PROJECT_ROOT, "configs", "default.yaml")
     config = load_config(config_path)
 
-    cmds = {"detect": cmd_detect, "batch": cmd_batch, "status": cmd_status, "test": cmd_test}
+    cmds = {"detect": cmd_detect, "batch": cmd_batch, "eval": cmd_eval, "status": cmd_status, "test": cmd_test}
     return cmds[args.command](args, config)
 
 

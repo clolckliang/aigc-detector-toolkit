@@ -7,6 +7,8 @@ import logging
 import numpy as np
 from typing import Dict, List, Optional
 
+from .progress import progress_iter
+
 logger = logging.getLogger(__name__)
 
 
@@ -125,7 +127,7 @@ class HC3Adapter:
             logger.warning("HC3 检测异常: %s", e)
             return self._empty_result()
 
-    def detect_batch(self, texts: List[str]) -> List[Dict]:
+    def detect_batch(self, texts: List[str], show_progress: bool = True) -> List[Dict]:
         if not self.available:
             return [self._empty_result() for _ in texts]
         valid_indices = [i for i, t in enumerate(texts) if len(t.strip()) >= self.min_text_length]
@@ -145,7 +147,10 @@ class HC3Adapter:
                 probs = F.softmax(outputs, dim=1).cpu().numpy()
 
             results = [self._empty_result() for _ in texts]
-            for j, idx in enumerate(valid_indices):
+            iterator = enumerate(valid_indices)
+            if show_progress:
+                iterator = progress_iter(list(iterator), total=len(valid_indices), desc="HC3")
+            for j, idx in iterator:
                 ai_prob = float(probs[j][1])
                 results[idx] = {
                     "engine": "hc3",

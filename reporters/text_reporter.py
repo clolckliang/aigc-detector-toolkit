@@ -6,6 +6,14 @@ from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
+ENGINE_LABELS = {
+    "fengci": "FengCi0",
+    "hc3": "HC3+m3e",
+    "openai": "OpenAI API",
+    "binoculars": "Binoculars",
+    "local_logprob": "Local Logprob",
+}
+
 
 def generate_text_report(
     paragraphs: List[Dict],
@@ -33,10 +41,9 @@ def generate_text_report(
         f.write(f"检测时间:   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"检测引擎:   {engine_status['mode']}\n")
         if engine_status['mode'] == 'ensemble':
-            f.write(f"  FengCi0:  {'可用' if engine_status['fengci_available'] else '不可用'} "
-                    f"(权重 {engine_status['fengci_weight']:.0%})\n")
-            f.write(f"  HC3+m3e:  {'可用' if engine_status['hc3_available'] else '不可用'} "
-                    f"(权重 {engine_status['hc3_weight']:.0%})\n")
+            for name, label in ENGINE_LABELS.items():
+                f.write(f"  {label:14s}: {'可用' if engine_status.get(f'{name}_available') else '不可用'} "
+                        f"(权重 {engine_status.get(f'{name}_weight', 0):.0%})\n")
         f.write(f"判定阈值:   {engine_status['threshold']:.2f}\n\n")
 
         # 汇总统计
@@ -121,10 +128,15 @@ def generate_text_report(
 
                     # 特征信息
                     features = eng_result.get('features', {})
-                    if features and eng_name == 'fengci':
-                        top_feats = sorted(features.items(), key=lambda x: abs(x[1] - 0.5), reverse=True)[:5]
+                    if features:
+                        numeric_features = {
+                            k: v for k, v in features.items() if isinstance(v, (int, float))
+                        }
+                        top_feats = sorted(numeric_features.items(), key=lambda x: abs(x[1] - 0.5), reverse=True)[:5]
                         feat_str = ', '.join([f"{k}={v:.3f}" for k, v in top_feats])
                         f.write(f"  特征: {feat_str}")
+                    if eng_result.get('method'):
+                        f.write(f"  method={eng_result['method']}")
                     f.write("\n")
 
             f.write("\n")

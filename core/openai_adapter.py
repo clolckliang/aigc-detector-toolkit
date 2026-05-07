@@ -12,9 +12,11 @@ import os
 import re
 import math
 import logging
-import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
+
+from .progress import progress_iter
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,7 @@ class OpenAICompatibleAPIDetector:
         min_text_length: int = 30,
         window_size: int = 200,
         strategy: str = "perplexity",
+        api_concurrency: int = 1,
     ):
         self.api_base = api_base.rstrip('/')
         self.api_key = (
@@ -50,9 +53,22 @@ class OpenAICompatibleAPIDetector:
         self.min_text_length = min_text_length
         self.window_size = window_size
         self.strategy = strategy
+        self.api_concurrency = max(1, int(api_concurrency or 1))
         self.available = False
+        self.client = None
+        self.supports_echo = None
 
         self._init_detector()
+
+    def _init_client(self, timeout: float = 60.0):
+        from openai import OpenAI
+
+        self.client = OpenAI(
+            api_key=self.api_key,
+            base_url=self.api_base,
+            timeout=timeout,
+        )
+        return self.client
 
     def _init_detector(self):
         """测试 API 连通性"""
@@ -63,29 +79,18 @@ class OpenAICompatibleAPIDetector:
             return
 
         try:
-            import httpx
-            # 简单测试连通性
-            headers = {"Content-Type": "application/json"}
-            if self.api_key:
-                headers["Authorization"] = f"Bearer {self.api_key}"
+            client = self._init_client(timeout=30.0)
 
             # 尝试 completions endpoint with logprobs
-            test_payload = {
-                "model": self.model,
-                "prompt": "测试",
-                "max_tokens": 1,
-                "logprobs": 1,
-                "temperature": 0,
-            }
-            resp = httpx.post(
-                f"{self.api_base}/completions",
-                json=test_payload,
-                headers=headers,
-                timeout=30,
-            )
-
-            if resp.status_code == 200:
-                data = resp.json()
+            try:
+                resp = client.completions.create(
+                    model=self.model,
+                    prompt="测试",
+                    max_tokens=1,
+                    logprobs=1,
+                    temperature=0,
+                )
+                data = self._to_dict(resp)
                 # 检查是否返回了 logprobs
                 if data.get("choices") and data["choices"][0].get("logprobs"):
                     self.available = True
@@ -94,32 +99,29 @@ class OpenAICompatibleAPIDetector:
                     return
                 else:
                     logger.info("OpenAI 兼容 API completions 可用但无 logprobs，尝试 chat 模式")
+            except Exception as e:
+                logger.info("OpenAI 兼容 API completions 不可用，尝试 chat 模式: %s", e)
 
             # 尝试 chat completions with logprobs
-            test_payload = {
-                "model": self.model,
-                "messages": [{"role": "user", "content": "测试"}],
-                "max_tokens": 1,
-                "logprobs": True,
-                "top_logprobs": 1,
-                "temperature": 0,
-            }
-            resp = httpx.post(
-                f"{self.api_base}/chat/completions",
-                json=test_payload,
-                headers=headers,
-                timeout=30,
-            )
-
-            if resp.status_code == 200:
+            try:
+                client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": "测试"}],
+                    max_tokens=1,
+                    logprobs=True,
+                    top_logprobs=1,
+                    temperature=0,
+                )
                 self.available = True
                 self.use_completions = False
+                self.supports_echo = False
                 logger.info("OpenAI 兼容 API (chat+logprobs) 连通成功")
-            else:
+            except Exception as e:
                 # API 可用但不支持 logprobs，退化为基础模式
-                logger.warning("OpenAI 兼容 API 不支持 logprobs (status=%d)，将使用基础文本分析模式", resp.status_code)
+                logger.warning("OpenAI 兼容 API chat/logprobs 不可用，将使用基础文本分析模式: %s", e)
                 self.available = True
                 self.use_completions = False
+                self.supports_echo = False
                 self.strategy = "basic"
 
         except Exception as e:
@@ -129,47 +131,39 @@ class OpenAICompatibleAPIDetector:
 
     def _call_api(self, prompt: str, max_tokens: int = 1) -> Optional[Dict]:
         """调用 OpenAI 兼容 API"""
-        import httpx
-
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-
         try:
+            client = self.client or self._init_client()
             if self.use_completions:
-                payload = {
-                    "model": self.model,
-                    "prompt": prompt,
-                    "max_tokens": max_tokens,
-                    "logprobs": 5,
-                    "temperature": 0,
-                }
-                resp = httpx.post(
-                    f"{self.api_base}/completions",
-                    json=payload, headers=headers, timeout=60,
+                resp = client.completions.create(
+                    model=self.model,
+                    prompt=prompt,
+                    max_tokens=max_tokens,
+                    logprobs=5,
+                    temperature=0,
                 )
             else:
-                payload = {
-                    "model": self.model,
-                    "messages": [{"role": "user", "content": f"请继续以下文本:\n\n{prompt}"}],
-                    "max_tokens": max_tokens,
-                    "logprobs": True,
-                    "top_logprobs": 5,
-                    "temperature": 0,
-                }
-                resp = httpx.post(
-                    f"{self.api_base}/chat/completions",
-                    json=payload, headers=headers, timeout=60,
+                resp = client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": f"请继续以下文本:\n\n{prompt}"}],
+                    max_tokens=max_tokens,
+                    logprobs=True,
+                    top_logprobs=5,
+                    temperature=0,
                 )
-
-            if resp.status_code == 200:
-                return resp.json()
-            else:
-                logger.debug("API 调用失败: %d %s", resp.status_code, resp.text[:200])
-                return None
+            return self._to_dict(resp)
         except Exception as e:
             logger.debug("API 调用异常: %s", e)
             return None
+
+    @staticmethod
+    def _to_dict(response) -> Dict:
+        if isinstance(response, dict):
+            return response
+        if hasattr(response, "model_dump"):
+            return response.model_dump(exclude_none=True)
+        if hasattr(response, "dict"):
+            return response.dict()
+        return dict(response)
 
     def _compute_perplexity_from_logprobs(self, logprobs_list: List[float]) -> float:
         """从 logprobs 列表计算困惑度"""
@@ -272,46 +266,41 @@ class OpenAICompatibleAPIDetector:
 
         如果 API 支持 echo=True，可以直接获取整段文本的 logprobs
         """
-        import httpx
-
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        if self.use_completions and self.supports_echo is False:
+            return self._compute_text_surprise(text)
 
         try:
             # 尝试 echo 模式（获取 prompt 中每个 token 的 logprobs）
-            payload = {
-                "model": self.model,
-                "prompt": text[:2000],  # 限制长度
-                "max_tokens": 0,
-                "logprobs": 5,
-                "echo": True,
-                "temperature": 0,
-            }
-            resp = httpx.post(
-                f"{self.api_base}/completions",
-                json=payload, headers=headers, timeout=60,
+            client = self.client or self._init_client()
+            resp = client.completions.create(
+                model=self.model,
+                prompt=text[:2000],  # 限制长度
+                max_tokens=0,
+                logprobs=5,
+                echo=True,
+                temperature=0,
             )
+            data = self._to_dict(resp)
+            choice = data["choices"][0]
+            token_logprobs = self._extract_logprobs(choice)
 
-            if resp.status_code == 200:
-                data = resp.json()
-                choice = data["choices"][0]
-                token_logprobs = self._extract_logprobs(choice)
-
-                if token_logprobs:
-                    valid_logprobs = [lp for lp in token_logprobs if lp is not None]
-                    if valid_logprobs:
-                        ppl = self._compute_perplexity_from_logprobs(valid_logprobs)
-                        avg_logprob = sum(valid_logprobs) / len(valid_logprobs)
-                        return {
-                            'score': ppl,
-                            'avg_logprob': avg_logprob,
-                            'ntokens': len(valid_logprobs),
-                            'method': 'full_echo',
-                        }
+            if token_logprobs:
+                valid_logprobs = [lp for lp in token_logprobs if lp is not None]
+                if valid_logprobs:
+                    ppl = self._compute_perplexity_from_logprobs(valid_logprobs)
+                    avg_logprob = sum(valid_logprobs) / len(valid_logprobs)
+                    self.supports_echo = True
+                    return {
+                        'score': ppl,
+                        'avg_logprob': avg_logprob,
+                        'ntokens': len(valid_logprobs),
+                        'method': 'full_echo',
+                    }
+            self.supports_echo = False
 
         except Exception as e:
             logger.debug("echo 模式失败: %s", e)
+            self.supports_echo = False
 
         # 退化到文本分割策略
         return self._compute_text_surprise(text)
@@ -463,19 +452,43 @@ class OpenAICompatibleAPIDetector:
             logger.warning("OpenAI 兼容 API 检测异常: %s", e)
             return self._empty_result()
 
-    def detect_batch(self, texts: List[str]) -> List[Dict]:
+    def detect_batch(self, texts: List[str], show_progress: bool = True) -> List[Dict]:
         """
         批量检测
-        注意：API 调用有速率限制，逐条检测并添加间隔
+        使用线程池并发调用 API。api_concurrency=1 时保持串行行为。
         """
-        results = []
-        for i, text in enumerate(texts):
-            result = self.detect(text)
-            results.append(result)
+        if not texts:
+            return []
 
-            if (i + 1) % 10 == 0:
-                logger.info("  OpenAI 兼容 API 进度: %d/%d", i + 1, len(texts))
-                time.sleep(0.5)  # 速率限制
+        if self.api_concurrency <= 1:
+            results = []
+            iterable = progress_iter(texts, total=len(texts), desc="OpenAI API") if show_progress else texts
+            for i, text in enumerate(iterable):
+                result = self.detect(text)
+                results.append(result)
+
+                if (i + 1) % 10 == 0:
+                    logger.info("  OpenAI 兼容 API 进度: %d/%d", i + 1, len(texts))
+                    time.sleep(0.5)  # 保守串行模式下避免触发速率限制
+            return results
+
+        workers = min(self.api_concurrency, len(texts))
+        logger.info("OpenAI 兼容 API 并发检测: concurrency=%d, total=%d", workers, len(texts))
+        results = [None] * len(texts)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_map = {executor.submit(self.detect, text): i for i, text in enumerate(texts)}
+            iterable = as_completed(future_map)
+            if show_progress:
+                iterable = progress_iter(iterable, total=len(future_map), desc="OpenAI API")
+            for done, future in enumerate(iterable, start=1):
+                i = future_map[future]
+                try:
+                    results[i] = future.result()
+                except Exception as e:
+                    logger.warning("OpenAI 兼容 API 并发检测异常: %s", e)
+                    results[i] = self._empty_result()
+                if done % 10 == 0 or done == len(texts):
+                    logger.info("  OpenAI 兼容 API 进度: %d/%d", done, len(texts))
 
         return results
 
@@ -490,5 +503,3 @@ class OpenAICompatibleAPIDetector:
             'method': 'unavailable',
             'available': False,
         }
-
-

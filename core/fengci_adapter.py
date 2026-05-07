@@ -42,7 +42,6 @@ class FeatureExtractor:
         }
 
     def extract_features(self, text: str) -> List[float]:
-        from scipy.stats import entropy as sp_entropy
         if not text or len(text.strip()) < 10:
             return [0.5] * len(self.feature_names)
 
@@ -72,7 +71,7 @@ class FeatureExtractor:
 
         features = [
             # 0: char_entropy_norm
-            min((sp_entropy([c / len(chars) for c in Counter(chars).values()], base=2) if chars else 0.0) / 7.0, 1.0),
+            min((self._entropy([c / len(chars) for c in Counter(chars).values()]) if chars else 0.0) / 7.0, 1.0),
             # 1: avg_sentence_length_norm
             min(float(np.mean(sentence_lengths)) / 60.0, 1.0),
             # 2: sentence_length_cv_norm
@@ -88,7 +87,7 @@ class FeatureExtractor:
             # 7: function_word_ratio
             _safe_div(sum(1 for w in words if w in self.function_words), total_words),
             # 8: punctuation_ratio
-            min(len(re.findall(r"[，。！？；：、""''《》【】\(\)\[\],.:;!?\"'\-—…]", normalized)) / max(len(chars), 1), 1.0),
+            min(len(re.findall(r"""[，。！？；：、""''《》【】()\[\],.:;!?"'\-—…]""", normalized)) / max(len(chars), 1), 1.0),
             # 9: long_word_ratio
             _safe_div(sum(1 for w in words if len(w) >= 3), total_words),
             # 10: pos_diversity
@@ -100,6 +99,10 @@ class FeatureExtractor:
 
     def get_feature_dict(self, fv):
         return dict(zip(self.feature_names, fv))
+
+    @staticmethod
+    def _entropy(probs):
+        return -sum(p * math.log2(p) for p in probs if p > 0)
 
     @staticmethod
     def _bigram_repetition(words):
@@ -114,10 +117,9 @@ class FeatureExtractor:
     def _pos_diversity(tags):
         if not tags:
             return 0.0
-        from scipy.stats import entropy as sp_entropy
         counts = Counter(tags)
         probs = [c / len(tags) for c in counts.values()]
-        raw = float(sp_entropy(probs, base=2))
+        raw = float(FeatureExtractor._entropy(probs))
         max_ent = np.log2(len(counts) + 1)
         return min(raw / max_ent, 1.0) if max_ent > 0 else 0.0
 

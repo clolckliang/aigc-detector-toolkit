@@ -56,6 +56,8 @@ def generate_json_report(
                     'score': round(r['aigc_score'] * 100, 1) if r.get('aigc_score') is not None else None,
                     'label': r.get('label', 'unknown'),
                     'confidence': r.get('confidence', 0),
+                    'method': r.get('method'),
+                    'features': r.get('features', {}),
                 }
                 for eng, r in result.get('engine_results', {}).items()
             }

@@ -7,10 +7,15 @@ engine:
     hc3_weight: 0.20
     openai_weight: 0.25
     binoculars_weight: 0.25
+    # 默认不启用本地大模型；显式配置模型并把权重调高后才参与 ensemble。
+    local_logprob_weight: 0.0
 
 # OpenAI 兼容 API（也可通过环境变量 OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL 设置）
 # OPENAI_API_BASE 也可作为 OPENAI_BASE_URL 的兼容别名。
 # 旧的 MIMO_API_KEY / MIMO_API_BASE / MIMO_MODEL 仍可作为兼容回退。
+
+
+
 openai_api:
   api_base: "https://api.openai.com/v1"
   api_key: ""
@@ -23,6 +28,15 @@ binoculars:
   api_key: ""
   model: ""
 
+# 可选本地 logprob 检测器（默认关闭，不下载模型）
+local_logprob:
+  model_name_or_path: ""
+  device: "cpu"
+  max_length: 512
+  stride: 256
+  method: "logrank"  # logrank / perplexity
+  local_files_only: false
+
 # 文本提取
 extraction:
   min_paragraph_length: 30
@@ -34,10 +48,16 @@ extraction:
 threshold:
   aigc_threshold: 0.5
 
+# 性能
+performance:
+  # API 引擎批量检测并发数。建议 4-8；如果出现 429/限流，调低到 2-4。
+  api_concurrency: 8
+
 # 输出
 output:
   dir: null
   json: true
   text: true
+  html: true
   console: true
   verbose: false

@@ -4,6 +4,14 @@ from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
+ENGINE_LABELS = {
+    "fengci": "FengCi0",
+    "hc3": "HC3+m3e",
+    "openai": "OpenAI API",
+    "binoculars": "Binoculars",
+    "local_logprob": "Local Logprob",
+}
+
 
 def print_summary(paragraphs: List[Dict], results: List[Dict], engine_status: Dict):
     """打印终端摘要"""
@@ -21,10 +29,9 @@ def print_summary(paragraphs: List[Dict], results: List[Dict], engine_status: Di
     print("=" * 60)
     print(f"检测引擎:   {engine_status['mode']}")
     if engine_status['mode'] == 'ensemble':
-        print(f"  FengCi0:  {'✓' if engine_status['fengci_available'] else '✗'} "
-              f"(权重 {engine_status['fengci_weight']:.0%})")
-        print(f"  HC3+m3e:  {'✓' if engine_status['hc3_available'] else '✗'} "
-              f"(权重 {engine_status['hc3_weight']:.0%})")
+        for name, label in ENGINE_LABELS.items():
+            print(f"  {label:14s}: {'✓' if engine_status.get(f'{name}_available') else '✗'} "
+                  f"(权重 {engine_status.get(f'{name}_weight', 0):.0%})")
     print(f"判定阈值:   {engine_status['threshold']:.2f}")
     print("-" * 60)
     print(f"总段落数:     {total}")

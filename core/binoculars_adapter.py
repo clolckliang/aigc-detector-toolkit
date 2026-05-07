@@ -15,7 +15,10 @@ import os
 import sys
 import math
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Union
+
+from .progress import progress_iter
 
 logger = logging.getLogger(__name__)
 
@@ -126,13 +129,26 @@ class BinocularsAPIDetector:
         api_key: str = "",
         model: str = "gpt-4o-mini",
         min_text_length: int = 30,
+        api_concurrency: int = 1,
     ):
         self.api_base = api_base.rstrip('/')
         self.api_key = api_key
         self.model = model
         self.min_text_length = min_text_length
+        self.api_concurrency = max(1, int(api_concurrency or 1))
         self.available = False
+        self.client = None
         self._init()
+
+    def _init_client(self, timeout: float = 60.0):
+        from openai import OpenAI
+
+        self.client = OpenAI(
+            api_key=self.api_key,
+            base_url=self.api_base,
+            timeout=timeout,
+        )
+        return self.client
 
     def _init(self):
         if not self.api_key:
@@ -142,64 +158,54 @@ class BinocularsAPIDetector:
             return
 
         try:
-            import httpx
-            # 测试连通性
-            headers = {"Content-Type": "application/json"}
-            if self.api_key:
-                headers["Authorization"] = f"Bearer {self.api_key}"
-            resp = httpx.post(
-                f"{self.api_base}/chat/completions",
-                json={
-                    "model": self.model,
-                    "messages": [{"role": "user", "content": "hi"}],
-                    "max_tokens": 1,
-                    "logprobs": True,
-                    "top_logprobs": 5,
-                    "temperature": 0,
-                },
-                headers=headers, timeout=15,
+            client = self._init_client(timeout=15.0)
+            resp = client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=1,
+                logprobs=True,
+                top_logprobs=5,
+                temperature=0,
             )
             self.available = True
             self.has_logprobs = False
-            if resp.status_code == 200:
-                data = resp.json()
-                choice = data.get("choices", [{}])[0]
-                if choice.get("logprobs") or choice.get("message", {}).get("logprobs"):
-                    self.has_logprobs = True
-                    logger.info("Binoculars (API) 连通成功，logprobs 可用")
-                else:
-                    logger.info("Binoculars (API) 连通成功，无 logprobs，使用基础模式")
+            data = self._to_dict(resp)
+            choice = data.get("choices", [{}])[0]
+            if choice.get("logprobs") or choice.get("message", {}).get("logprobs"):
+                self.has_logprobs = True
+                logger.info("Binoculars (API) 连通成功，logprobs 可用")
             else:
-                logger.warning("Binoculars (API) 连接失败 (status=%d)，跳过 API 引擎", resp.status_code)
-                self.available = False
+                logger.info("Binoculars (API) 连通成功，无 logprobs，使用基础模式")
         except Exception as e:
             logger.error("Binoculars (API) 连接失败: %s", e)
             self.available = False
             self.has_logprobs = False
 
     def _call_api(self, messages: list, max_tokens: int = 200) -> Optional[Dict]:
-        import httpx
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
         try:
-            resp = httpx.post(
-                f"{self.api_base}/chat/completions",
-                json={
-                    "model": self.model,
-                    "messages": messages,
-                    "max_tokens": max_tokens,
-                    "logprobs": True,
-                    "top_logprobs": 5,
-                    "temperature": 0,
-                },
-                headers=headers, timeout=60,
+            client = self.client or self._init_client()
+            resp = client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                max_tokens=max_tokens,
+                logprobs=True,
+                top_logprobs=5,
+                temperature=0,
             )
-            if resp.status_code == 200:
-                return resp.json()
+            return self._to_dict(resp)
         except Exception as e:
             logger.debug("API 调用失败: %s", e)
         return None
+
+    @staticmethod
+    def _to_dict(response) -> Dict:
+        if isinstance(response, dict):
+            return response
+        if hasattr(response, "model_dump"):
+            return response.model_dump(exclude_none=True)
+        if hasattr(response, "dict"):
+            return response.dict()
+        return dict(response)
 
     def _get_logprobs_from_response(self, result: Dict) -> List[float]:
         """从 API 响应中提取 logprobs"""
@@ -332,12 +338,36 @@ class BinocularsAPIDetector:
             'available': True,
         }
 
-    def detect_batch(self, texts: List[str]) -> List[Dict]:
-        results = []
-        for i, text in enumerate(texts):
-            results.append(self.detect(text))
-            if (i + 1) % 10 == 0:
-                logger.info("  Binoculars API 进度: %d/%d", i + 1, len(texts))
+    def detect_batch(self, texts: List[str], show_progress: bool = True) -> List[Dict]:
+        if not texts:
+            return []
+
+        if self.api_concurrency <= 1:
+            results = []
+            iterable = progress_iter(texts, total=len(texts), desc="Binoculars") if show_progress else texts
+            for i, text in enumerate(iterable):
+                results.append(self.detect(text))
+                if (i + 1) % 10 == 0:
+                    logger.info("  Binoculars API 进度: %d/%d", i + 1, len(texts))
+            return results
+
+        workers = min(self.api_concurrency, len(texts))
+        logger.info("Binoculars API 并发检测: concurrency=%d, total=%d", workers, len(texts))
+        results = [None] * len(texts)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_map = {executor.submit(self.detect, text): i for i, text in enumerate(texts)}
+            iterable = as_completed(future_map)
+            if show_progress:
+                iterable = progress_iter(iterable, total=len(future_map), desc="Binoculars")
+            for done, future in enumerate(iterable, start=1):
+                i = future_map[future]
+                try:
+                    results[i] = future.result()
+                except Exception as e:
+                    logger.warning("Binoculars API 并发检测异常: %s", e)
+                    results[i] = self._empty()
+                if done % 10 == 0 or done == len(texts):
+                    logger.info("  Binoculars API 进度: %d/%d", done, len(texts))
         return results
 
     def _empty(self):
