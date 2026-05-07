@@ -1,6 +1,6 @@
 """
-MiMo API 检测器适配器
-使用 Xiaomi MiMo API 的 logprobs 功能进行 AIGC 检测
+OpenAI 兼容 API 检测器适配器
+使用 OpenAI 兼容接口的 logprobs 功能进行 AIGC 检测
 基于 Fast-DetectGPT 的条件概率曲率思想，通过 API 实现
 
 原理：
@@ -19,9 +19,9 @@ from typing import Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-class MiMoAPIDetector:
+class OpenAICompatibleAPIDetector:
     """
-    基于 Xiaomi MiMo API 的 AIGC 检测器
+    基于 OpenAI 兼容 API 的 AIGC 检测器
 
     使用 OpenAI 兼容 API 的 logprobs 功能，
     计算文本的"条件概率曲率"近似值。
@@ -33,15 +33,19 @@ class MiMoAPIDetector:
 
     def __init__(
         self,
-        api_base: str = "https://token-plan-cn.xiaomimimo.com/v1",
+        api_base: str = "https://api.openai.com/v1",
         api_key: Optional[str] = None,
-        model: str = "mimo-v2.5-pro",
+        model: str = "gpt-4o-mini",
         min_text_length: int = 30,
         window_size: int = 200,
         strategy: str = "perplexity",
     ):
         self.api_base = api_base.rstrip('/')
-        self.api_key = api_key or os.environ.get("MIMO_API_KEY", "")
+        self.api_key = (
+            api_key
+            or os.environ.get("OPENAI_API_KEY", "")
+            or os.environ.get("MIMO_API_KEY", "")
+        )
         self.model = model
         self.min_text_length = min_text_length
         self.window_size = window_size
@@ -52,6 +56,12 @@ class MiMoAPIDetector:
 
     def _init_detector(self):
         """测试 API 连通性"""
+        if not self.api_key:
+            logger.info("OpenAI 兼容 API 未配置 api_key，跳过 API 引擎")
+            self.available = False
+            self.use_completions = False
+            return
+
         try:
             import httpx
             # 简单测试连通性
@@ -80,10 +90,10 @@ class MiMoAPIDetector:
                 if data.get("choices") and data["choices"][0].get("logprobs"):
                     self.available = True
                     self.use_completions = True
-                    logger.info("MiMo API (completions+logprobs) 连通成功")
+                    logger.info("OpenAI 兼容 API (completions+logprobs) 连通成功")
                     return
                 else:
-                    logger.info("MiMo API completions 可用但无 logprobs，尝试 chat 模式")
+                    logger.info("OpenAI 兼容 API completions 可用但无 logprobs，尝试 chat 模式")
 
             # 尝试 chat completions with logprobs
             test_payload = {
@@ -104,22 +114,21 @@ class MiMoAPIDetector:
             if resp.status_code == 200:
                 self.available = True
                 self.use_completions = False
-                logger.info("MiMo API (chat+logprobs) 连通成功")
+                logger.info("OpenAI 兼容 API (chat+logprobs) 连通成功")
             else:
                 # API 可用但不支持 logprobs，退化为基础模式
-                logger.warning("MiMo API 不支持 logprobs (status=%d)，将使用基础文本分析模式", resp.status_code)
+                logger.warning("OpenAI 兼容 API 不支持 logprobs (status=%d)，将使用基础文本分析模式", resp.status_code)
                 self.available = True
                 self.use_completions = False
                 self.strategy = "basic"
 
         except Exception as e:
-            logger.error("MiMo API 连接失败: %s", e)
-            self.available = True  # 仍然可用，使用基础模式
+            logger.error("OpenAI 兼容 API 连接失败: %s", e)
+            self.available = False
             self.use_completions = False
-            self.strategy = "basic"
 
     def _call_api(self, prompt: str, max_tokens: int = 1) -> Optional[Dict]:
-        """调用 MiMo API"""
+        """调用 OpenAI 兼容 API"""
         import httpx
 
         headers = {"Content-Type": "application/json"}
@@ -170,6 +179,29 @@ class MiMoAPIDetector:
         # perplexity = 2^(-avg_logprob)
         return math.pow(2, -avg_logprob)
 
+    def _extract_logprobs(self, choice: Dict) -> List[float]:
+        """兼容 completions 与 chat.completions 的 logprobs 响应结构。"""
+        logprobs_data = choice.get("logprobs") or {}
+
+        token_logprobs = logprobs_data.get("token_logprobs")
+        if token_logprobs:
+            return [lp for lp in token_logprobs if lp is not None]
+
+        content_logprobs = logprobs_data.get("content")
+        if isinstance(content_logprobs, list):
+            values = []
+            for item in content_logprobs:
+                if isinstance(item, dict) and item.get("logprob") is not None:
+                    values.append(item["logprob"])
+            return values
+
+        msg_logprobs = choice.get("message", {}).get("logprobs", {})
+        token_logprobs = msg_logprobs.get("token_logprobs")
+        if token_logprobs:
+            return [lp for lp in token_logprobs if lp is not None]
+
+        return []
+
     def _compute_text_surprise(self, text: str) -> Dict:
         """
         计算文本的"惊讶度"
@@ -207,12 +239,10 @@ class MiMoAPIDetector:
         try:
             if self.use_completions:
                 choice = result["choices"][0]
-                logprobs_data = choice.get("logprobs", {})
-                token_logprobs = logprobs_data.get("token_logprobs", [])
+                token_logprobs = self._extract_logprobs(choice)
             else:
                 choice = result["choices"][0]
-                logprobs_data = choice.get("logprobs", {})
-                token_logprobs = logprobs_data.get("token_logprobs", [])
+                token_logprobs = self._extract_logprobs(choice)
 
             if not token_logprobs:
                 return {'score': None, 'method': 'no_logprobs'}
@@ -266,8 +296,7 @@ class MiMoAPIDetector:
             if resp.status_code == 200:
                 data = resp.json()
                 choice = data["choices"][0]
-                logprobs_data = choice.get("logprobs", {})
-                token_logprobs = logprobs_data.get("token_logprobs", [])
+                token_logprobs = self._extract_logprobs(choice)
 
                 if token_logprobs:
                     valid_logprobs = [lp for lp in token_logprobs if lp is not None]
@@ -360,7 +389,7 @@ class MiMoAPIDetector:
 
         Returns:
             {
-                'engine': 'mimo-api',
+                'engine': 'openai-api',
                 'aigc_score': float,    # 0-1
                 'perplexity': float,    # 原始困惑度
                 'avg_logprob': float,   # 平均 log 概率
@@ -420,7 +449,7 @@ class MiMoAPIDetector:
             confidence = max(score, 1 - score)
 
             return {
-                'engine': 'mimo-api',
+                'engine': 'openai-api',
                 'aigc_score': score,
                 'perplexity': round(ppl, 2) if ppl else None,
                 'avg_logprob': round(avg_logprob, 4) if avg_logprob else None,
@@ -431,7 +460,7 @@ class MiMoAPIDetector:
             }
 
         except Exception as e:
-            logger.warning("MiMo API 检测异常: %s", e)
+            logger.warning("OpenAI 兼容 API 检测异常: %s", e)
             return self._empty_result()
 
     def detect_batch(self, texts: List[str]) -> List[Dict]:
@@ -445,14 +474,14 @@ class MiMoAPIDetector:
             results.append(result)
 
             if (i + 1) % 10 == 0:
-                logger.info("  MiMo API 进度: %d/%d", i + 1, len(texts))
+                logger.info("  OpenAI 兼容 API 进度: %d/%d", i + 1, len(texts))
                 time.sleep(0.5)  # 速率限制
 
         return results
 
     def _empty_result(self) -> Dict:
         return {
-            'engine': 'mimo-api',
+            'engine': 'openai-api',
             'aigc_score': None,
             'perplexity': None,
             'avg_logprob': None,
@@ -461,3 +490,5 @@ class MiMoAPIDetector:
             'method': 'unavailable',
             'available': False,
         }
+
+

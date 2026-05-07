@@ -1,6 +1,6 @@
 """
 核心检测引擎 - 四引擎融合（自包含版）
-支持 FengCi0 / HC3+m3e / MiMo API / Binoculars
+支持 FengCi0 / HC3+m3e / OpenAI 兼容 API / Binoculars
 所有引擎代码已内联，无需克隆外部仓库。
 """
 import logging
@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 
 from .fengci_adapter import FengCiAdapter
 from .hc3_adapter import HC3Adapter
-from .mimo_api_adapter import MiMoAPIDetector
+from .openai_adapter import OpenAICompatibleAPIDetector
 from .binoculars_adapter import BinocularsAPIDetector
 
 logger = logging.getLogger(__name__)
@@ -18,10 +18,10 @@ logger = logging.getLogger(__name__)
 class DetectionEngine:
     """
     AIGC 检测引擎。
-    模式: fengci / hc3 / mimo / binoculars / ensemble
+    模式: fengci / hc3 / openai / binoculars / ensemble
     """
 
-    ENGINE_NAMES = ("fengci", "hc3", "mimo", "binoculars")
+    ENGINE_NAMES = ("fengci", "hc3", "openai", "binoculars")
 
     def __init__(
         self,
@@ -32,32 +32,32 @@ class DetectionEngine:
         # 权重
         fengci_weight: float = 0.30,
         hc3_weight: float = 0.20,
-        mimo_weight: float = 0.25,
+        openai_weight: float = 0.25,
         binoculars_weight: float = 0.25,
         # 阈值
         aigc_threshold: float = 0.5,
-        # MiMo API
-        mimo_api_base: Optional[str] = None,
-        mimo_api_key: Optional[str] = None,
-        mimo_model: str = "mimo-v2.5-pro",
-        mimo_strategy: str = "perplexity",
+        # OpenAI 兼容 API
+        openai_api_base: Optional[str] = None,
+        openai_api_key: Optional[str] = None,
+        openai_model: str = "gpt-4o-mini",
+        openai_strategy: str = "perplexity",
         # Binoculars
         binoculars_api_base: Optional[str] = None,
         binoculars_api_key: Optional[str] = None,
-        binoculars_model: str = "mimo-v2.5-pro",
+        binoculars_model: str = "gpt-4o-mini",
     ):
         self.mode = mode
         self.weights = {
             "fengci": fengci_weight,
             "hc3": hc3_weight,
-            "mimo": mimo_weight,
+            "openai": openai_weight,
             "binoculars": binoculars_weight,
         }
         self.aigc_threshold = aigc_threshold
 
         self.fengci: Optional[FengCiAdapter] = None
         self.hc3: Optional[HC3Adapter] = None
-        self.mimo: Optional[MiMoAPIDetector] = None
+        self.openai: Optional[OpenAICompatibleAPIDetector] = None
         self.binoculars: Optional[BinocularsAPIDetector] = None
 
         # FengCi0
@@ -78,26 +78,26 @@ class DetectionEngine:
                 if mode == "hc3":
                     raise RuntimeError("HC3 引擎不可用")
 
-        # MiMo API
-        if mode in ("mimo", "ensemble"):
-            self.mimo = MiMoAPIDetector(
-                api_base=mimo_api_base or "https://token-plan-cn.xiaomimimo.com/v1",
-                api_key=mimo_api_key or "",
-                model=mimo_model,
-                strategy=mimo_strategy,
+        # OpenAI 兼容 API
+        if mode in ("openai", "ensemble"):
+            self.openai = OpenAICompatibleAPIDetector(
+                api_base=openai_api_base or "https://api.openai.com/v1",
+                api_key=openai_api_key or "",
+                model=openai_model,
+                strategy=openai_strategy,
             )
-            if not self.mimo.available:
-                logger.warning("MiMo API 引擎不可用")
-                self.weights["mimo"] = 0
-                if mode == "mimo":
-                    raise RuntimeError("MiMo API 引擎不可用")
+            if not self.openai.available:
+                logger.warning("OpenAI 兼容 API 引擎不可用")
+                self.weights["openai"] = 0
+                if mode == "openai":
+                    raise RuntimeError("OpenAI 兼容 API 引擎不可用")
 
         # Binoculars
         if mode in ("binoculars", "ensemble"):
             self.binoculars = BinocularsAPIDetector(
-                api_base=binoculars_api_base or mimo_api_base or "https://token-plan-cn.xiaomimimo.com/v1",
-                api_key=binoculars_api_key or mimo_api_key or "",
-                model=binoculars_model or mimo_model,
+                api_base=binoculars_api_base or openai_api_base or "https://api.openai.com/v1",
+                api_key=binoculars_api_key or openai_api_key or "",
+                model=binoculars_model or openai_model,
             )
             if not self.binoculars.available:
                 logger.warning("Binoculars 引擎不可用")
@@ -148,7 +148,7 @@ class DetectionEngine:
 
         # 先跑支持批量的引擎
         batch_results = {}
-        for name in ("hc3", "mimo", "binoculars"):
+        for name in ("hc3", "openai", "binoculars"):
             obj = getattr(self, name, None)
             if not obj or not obj.available or self.weights.get(name, 0) <= 0:
                 continue
@@ -169,7 +169,7 @@ class DetectionEngine:
                     scores.append(r["aigc_score"])
                     weights_list.append(self.weights["fengci"])
 
-            for name in ("hc3", "mimo", "binoculars"):
+            for name in ("hc3", "openai", "binoculars"):
                 if name in batch_results and batch_results[name][i].get("aigc_score") is not None:
                     r = batch_results[name][i]
                     engine_results[name] = r

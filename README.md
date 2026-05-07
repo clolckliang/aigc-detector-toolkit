@@ -7,7 +7,7 @@
 - **四引擎融合检测**
   - 🌲 **FengCi0** — 12维文本特征 + 随机森林（自带预训练模型，毫秒级）
   - 🧠 **HC3+m3e** — m3e-base 编码 + OptimizedCNN 分类器（自带模型权重）
-  - 🔮 **MiMo API** — 利用 LLM 的 logprobs 计算困惑度（不需本地大模型）
+  - 🔮 **OpenAI 兼容 API** — 利用 LLM 的 logprobs 计算困惑度（不需本地大模型）
   - 🔭 **Binoculars** — 双模型 perplexity/entropy 比值（ICLR 2024）
 - **多格式支持**：`.docx` / `.md` / `.txt`
 - **自包含**：预训练模型已内嵌，`git clone` 即可使用
@@ -35,12 +35,13 @@ python main.py batch ./docs/
 python main.py status
 ```
 
-### 配置 MiMo API（可选，提升准确率）
+### 配置 OpenAI 兼容 API（可选，提升准确率）
 
 ```bash
 # 方式一：环境变量
-export MIMO_API_KEY="your-key-here"
-export MIMO_API_BASE="https://your-api-endpoint/v1"
+export OPENAI_API_KEY="your-key-here"
+export OPENAI_BASE_URL="https://api.openai.com/v1"
+export OPENAI_MODEL="gpt-4o-mini"
 
 # 方式二：编辑 configs/default.yaml
 ```
@@ -51,10 +52,10 @@ export MIMO_API_BASE="https://your-api-endpoint/v1"
 |------|------|:----------:|:--------:|------|
 | FengCi0 | ⚡ 毫秒 | ✅ 1MB | ❌ | 12维文本特征 + 随机森林 |
 | HC3+m3e | 🚀 秒级 | ✅ 25MB | ❌ | m3e 文本编码 + CNN 分类 |
-| MiMo API | 🐢 ~0.5s/段 | ❌ | ✅ | LLM logprobs 困惑度 |
+| OpenAI 兼容 API | 🐢 ~0.5s/段 | ❌ | ✅ | LLM logprobs 困惑度 |
 | Binoculars | 🐢 ~0.5s/段 | ❌ | ✅ | 双模型 ppl/x_ppl 比值 |
 
-默认权重：FengCi0 30% + HC3 20% + MiMo 25% + Binoculars 25%
+默认权重：FengCi0 30% + HC3 20% + OpenAI 兼容 API 25% + Binoculars 25%
 不配置 API key 时自动退化为 FengCi0 + HC3 双引擎。
 
 ## 输出示例
@@ -66,7 +67,7 @@ export MIMO_API_BASE="https://your-api-endpoint/v1"
 检测引擎:   ensemble
   FengCi0:  ✓ (权重 37%)
   HC3+m3e:  ✓ (权重 33%)
-  MiMo API: ✗ (权重 0%)
+  OpenAI 兼容 API: ✗ (权重 0%)
   Binoculars: ✗ (权重 0%)
 ------------------------------------------------------------
 总段落数:     454
@@ -89,7 +90,7 @@ aigc-detector-toolkit/
 │   ├── engine.py                    # 四引擎融合检测器
 │   ├── fengci_adapter.py            # FengCi0 适配器（自包含特征提取器）
 │   ├── hc3_adapter.py               # HC3+m3e 适配器（自包含 CNN 模型）
-│   ├── mimo_api_adapter.py          # MiMo API logprobs 适配器
+│   ├── mimo_api_adapter.py          # OpenAI 兼容 API logprobs 适配器
 │   └── binoculars_adapter.py        # Binoculars API 适配器
 ├── extractors/
 │   ├── docx_extractor.py            # DOCX 段落提取

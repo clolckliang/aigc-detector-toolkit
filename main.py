@@ -2,7 +2,7 @@
 """
 AIGC Detector Toolkit — 中文 AI 生成文本检测工具
 
-四引擎融合检测：FengCi0 特征工程 + HC3 深度学习 + MiMo API logprobs + Binoculars
+四引擎融合检测：FengCi0 特征工程 + HC3 深度学习 + OpenAI 兼容 API logprobs + Binoculars
 
 用法:
     python main.py detect <file>              检测单个文件
@@ -41,14 +41,17 @@ DEFAULT_CONFIG = {
         "ensemble": {
             "fengci_weight": 0.30,
             "hc3_weight": 0.20,
-            "mimo_weight": 0.25,
+            "openai_weight": 0.25,
             "binoculars_weight": 0.25,
         },
     },
-    "mimo_api": {
-        "api_base": os.environ.get("MIMO_API_BASE", "https://token-plan-cn.xiaomimimo.com/v1"),
-        "api_key": os.environ.get("MIMO_API_KEY", ""),
-        "model": os.environ.get("MIMO_MODEL", "mimo-v2.5-pro"),
+    "openai_api": {
+        "api_base": os.environ.get(
+            "OPENAI_BASE_URL",
+            os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1"),
+        ),
+        "api_key": os.environ.get("OPENAI_API_KEY", ""),
+        "model": os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
         "strategy": "perplexity",
     },
     "binoculars": {
@@ -89,10 +92,18 @@ def load_config(config_path=None):
             logging.warning("配置加载失败: %s", e)
 
     # 环境变量覆盖
-    if os.environ.get("MIMO_API_KEY"):
-        config["mimo_api"]["api_key"] = os.environ["MIMO_API_KEY"]
-    if os.environ.get("MIMO_API_BASE"):
-        config["mimo_api"]["api_base"] = os.environ["MIMO_API_BASE"]
+    # 兼容旧配置: mimo_api → openai_api
+    if "mimo_api" in config and "openai_api" not in user:
+        config["openai_api"].update({k: v for k, v in config.pop("mimo_api").items() if v})
+
+    if os.environ.get("OPENAI_API_KEY"):
+        config["openai_api"]["api_key"] = os.environ["OPENAI_API_KEY"]
+
+    if os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENAI_API_BASE"):
+        config["openai_api"]["api_base"] = os.environ.get("OPENAI_BASE_URL") or os.environ["OPENAI_API_BASE"]
+
+    if os.environ.get("OPENAI_MODEL"):
+        config["openai_api"]["model"] = os.environ["OPENAI_MODEL"]
 
     return config
 
@@ -102,27 +113,29 @@ def _models_dir():
 
 
 def build_engine(config, args):
-    mimo_cfg = config.get("mimo_api", {})
+    openai_cfg = config.get("openai_api", {})
     bino_cfg = config.get("binoculars", {})
     ensemble = config["engine"]["ensemble"]
     models = _models_dir()
+    mode = getattr(args, "engine", None) or config["engine"]["default"]
+    # openai 模式直接传递
 
     return DetectionEngine(
-        mode=getattr(args, "engine", None) or config["engine"]["default"],
+        mode=mode,
         fengci_model=os.path.join(models, "fengci", "aigc_detector_model.joblib"),
         hc3_model=os.path.join(models, "hc3", "OptimizedCNN_aigc_detector.pth"),
         fengci_weight=ensemble.get("fengci_weight", 0.30),
         hc3_weight=ensemble.get("hc3_weight", 0.20),
-        mimo_weight=ensemble.get("mimo_weight", 0.25),
+        openai_weight=ensemble.get("openai_weight", 0.25),
         binoculars_weight=ensemble.get("binoculars_weight", 0.25),
         aigc_threshold=getattr(args, "threshold", None) or config["threshold"]["aigc_threshold"],
-        mimo_api_base=mimo_cfg.get("api_base"),
-        mimo_api_key=mimo_cfg.get("api_key"),
-        mimo_model=mimo_cfg.get("model", "mimo-v2.5-pro"),
-        mimo_strategy=mimo_cfg.get("strategy", "perplexity"),
-        binoculars_api_base=bino_cfg.get("api_base") or mimo_cfg.get("api_base"),
-        binoculars_api_key=bino_cfg.get("api_key") or mimo_cfg.get("api_key"),
-        binoculars_model=bino_cfg.get("model") or mimo_cfg.get("model", "mimo-v2.5-pro"),
+        openai_api_base=openai_cfg.get("api_base"),
+        openai_api_key=openai_cfg.get("api_key"),
+        openai_model=openai_cfg.get("model", "gpt-4o-mini"),
+        openai_strategy=openai_cfg.get("strategy", "perplexity"),
+        binoculars_api_base=bino_cfg.get("api_base") or openai_cfg.get("api_base"),
+        binoculars_api_key=bino_cfg.get("api_key") or openai_cfg.get("api_key"),
+        binoculars_model=bino_cfg.get("model") or openai_cfg.get("model", "gpt-4o-mini"),
     )
 
 
@@ -247,7 +260,7 @@ def cmd_status(args, config):
     labels = {
         "fengci": "FengCi0 特征工程",
         "hc3": "HC3+m3e 深度学习",
-        "mimo": "MiMo API logprobs",
+        "openai": "OpenAI 兼容 API logprobs",
         "binoculars": "Binoculars 双模型",
     }
     for name, label in labels.items():
@@ -292,7 +305,7 @@ def main():
     parser.add_argument("-v", "--verbose", action="store_true", help="逐段详情输出")
 
     sub = parser.add_subparsers(dest="command", help="子命令")
-    choices = ["fengci", "hc3", "mimo", "binoculars", "ensemble"]
+    choices = ["fengci", "hc3", "openai", "binoculars", "ensemble"]
 
     p = sub.add_parser("detect", help="检测单个文件")
     p.add_argument("file", help="待检测文件（.docx / .md / .txt）")

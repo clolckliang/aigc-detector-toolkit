@@ -9,7 +9,7 @@ Binoculars 检测器适配器
 
 两种使用模式：
 1. local：本地加载 falcon-7b / falcon-7b-instruct（需 ~14GB 内存）
-2. api：通过 MiMo API 计算近似 perplexity（不需要本地大模型）
+2. api：通过 OpenAI 兼容 API 计算近似 perplexity（不需要本地大模型）
 """
 import os
 import sys
@@ -112,7 +112,7 @@ class BinocularsLocalDetector:
 class BinocularsAPIDetector:
     """
     API 版 Binoculars
-    使用 MiMo API 的 logprobs 近似计算 perplexity / cross-perplexity
+    使用 OpenAI 兼容 API 的 logprobs 近似计算 perplexity / cross-perplexity
 
     核心思想：用同一模型的两次不同调用来模拟 observer/performer：
     - observer 角色：用"续写"模式获取 token logprobs → perplexity
@@ -122,9 +122,9 @@ class BinocularsAPIDetector:
 
     def __init__(
         self,
-        api_base: str = "https://token-plan-cn.xiaomimimo.com/v1",
+        api_base: str = "https://api.openai.com/v1",
         api_key: str = "",
-        model: str = "mimo-v2.5-pro",
+        model: str = "gpt-4o-mini",
         min_text_length: int = 30,
     ):
         self.api_base = api_base.rstrip('/')
@@ -135,6 +135,12 @@ class BinocularsAPIDetector:
         self._init()
 
     def _init(self):
+        if not self.api_key:
+            logger.info("Binoculars (API) 未配置 api_key，跳过 API 引擎")
+            self.available = False
+            self.has_logprobs = False
+            return
+
         try:
             import httpx
             # 测试连通性
@@ -164,10 +170,11 @@ class BinocularsAPIDetector:
                 else:
                     logger.info("Binoculars (API) 连通成功，无 logprobs，使用基础模式")
             else:
-                logger.info("Binoculars (API) 连通成功 (status=%d)，使用基础模式", resp.status_code)
+                logger.warning("Binoculars (API) 连接失败 (status=%d)，跳过 API 引擎", resp.status_code)
+                self.available = False
         except Exception as e:
             logger.error("Binoculars (API) 连接失败: %s", e)
-            self.available = True  # 仍可用，退化为基础模式
+            self.available = False
             self.has_logprobs = False
 
     def _call_api(self, messages: list, max_tokens: int = 200) -> Optional[Dict]:
@@ -202,6 +209,12 @@ class BinocularsAPIDetector:
             logprobs_obj = choice.get("logprobs", {})
             if logprobs_obj and logprobs_obj.get("token_logprobs"):
                 return [lp for lp in logprobs_obj["token_logprobs"] if lp is not None]
+            if logprobs_obj and isinstance(logprobs_obj.get("content"), list):
+                return [
+                    item["logprob"]
+                    for item in logprobs_obj["content"]
+                    if isinstance(item, dict) and item.get("logprob") is not None
+                ]
             # 某些 API 在 message.logprobs 中
             msg_logprobs = choice.get("message", {}).get("logprobs", {})
             if msg_logprobs and msg_logprobs.get("token_logprobs"):
