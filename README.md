@@ -272,8 +272,32 @@ aigc-detector-toolkit/
 │   └── train/                       # 训练数据（ai/ + human/）
 ├── examples/
 │   └── eval_sample.jsonl            # 评测样本
+├── skills/
+│   └── aigc-detect/
+│       ├── SKILL.md                 # Claude Code Skill 定义
+│       └── INSTALL.md               # Skill 安装说明
 └── output/                          # 检测输出（git 忽略）
 ```
+
+## Claude Code Skill
+
+项目内置了 `aigc-detect` Skill，可被 Claude Code、Cursor 等 AI Agent 框架直接调用。
+
+```bash
+# Claude Code 项目级安装
+mkdir -p .claude/skills/aigc-detect
+cp skills/aigc-detect/SKILL.md .claude/skills/aigc-detect/
+```
+
+安装后通过自然语言触发：
+
+```text
+"帮我检测这篇论文是否有 AI 生成内容"
+"训练一个新的 FengCi0 模型"
+"生成 200 条 AI 训练数据"
+```
+
+支持 Claude Code、Cursor、OpenClaw、Hermes、Codex、LangChain 等框架，详见 [skills/aigc-detect/INSTALL.md](skills/aigc-detect/INSTALL.md)。
 
 ## 许可证
 

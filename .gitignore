@@ -11,6 +11,7 @@ configs/
 eval_reports/
 output/
 data/
+.claude/
 .DS_Store
 *.swp
 *.swo
