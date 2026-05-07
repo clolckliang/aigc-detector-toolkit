@@ -11,6 +11,9 @@ configs/
 eval_reports/
 output/
 data/
+*.docx
+AIGC检测报告_*.txt
+AIGC检测结果_*.json
 .claude/
 .DS_Store
 *.swp
