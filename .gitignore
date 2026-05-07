@@ -10,6 +10,7 @@ configs/
 .cache/
 eval_reports/
 output/
+data/
 .DS_Store
 *.swp
 *.swo
