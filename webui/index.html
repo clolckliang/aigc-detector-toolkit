@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AIGC Detector Toolkit</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>AIGC Detector Toolkit</h1>
+          <p>文档检测工作台</p>
+        </div>
+        <div class="status-pill" id="statusPill">就绪</div>
+      </header>
+
+      <section class="workspace">
+        <aside class="control-panel">
+          <div class="field-group">
+            <label for="taskMode">运行模式</label>
+            <select id="taskMode">
+              <option value="detect">检测</option>
+              <option value="refine">润色降重</option>
+            </select>
+          </div>
+
+          <div class="field-group">
+            <label for="engine">检测引擎</label>
+            <select id="engine">
+              <option value="ensemble">ensemble</option>
+              <option value="fengci">fengci</option>
+              <option value="hc3">hc3</option>
+              <option value="openai">openai</option>
+              <option value="binoculars">binoculars</option>
+              <option value="local_logprob">local_logprob</option>
+              <option value="lastde">lastde</option>
+            </select>
+          </div>
+
+          <div class="field-row">
+            <div class="field-group">
+              <label for="threshold">阈值</label>
+              <input id="threshold" type="number" min="0" max="1" step="0.01" value="0.5" />
+            </div>
+            <div class="field-group">
+              <label for="minLength">最小段长</label>
+              <input id="minLength" type="number" min="1" step="1" value="30" />
+            </div>
+          </div>
+
+          <div class="refine-options" id="refineOptions">
+            <div class="field-row">
+              <div class="field-group">
+                <label for="refineThreshold">润色阈值</label>
+                <input id="refineThreshold" type="number" min="0" max="1" step="0.01" value="0.4" />
+              </div>
+              <div class="field-group">
+                <label for="maxRounds">最大轮数</label>
+                <input id="maxRounds" type="number" min="1" max="8" step="1" value="2" />
+              </div>
+            </div>
+            <div class="field-group">
+              <label for="detectConcurrency">复测并发</label>
+              <input id="detectConcurrency" type="number" min="1" max="32" step="1" value="4" />
+            </div>
+          </div>
+
+          <div class="tabs" role="tablist">
+            <button class="tab active" data-tab="file">文件</button>
+            <button class="tab" data-tab="text">文本</button>
+            <button class="tab" data-tab="config">配置</button>
+          </div>
+
+          <div class="tab-page active" id="filePage">
+            <label class="drop-zone" for="fileInput" id="dropZone">
+              <span class="drop-title">选择或拖入文件</span>
+              <span class="drop-meta">支持 .docx / .md / .txt</span>
+              <input id="fileInput" type="file" accept=".docx,.md,.txt" />
+            </label>
+            <div class="file-name" id="fileName">未选择文件</div>
+            <button class="primary-action" id="detectFileBtn">检测文件</button>
+          </div>
+
+          <div class="tab-page" id="textPage">
+            <textarea id="textInput" spellcheck="false" placeholder="粘贴需要检测的正文，段落可用空行分隔。"></textarea>
+            <button class="primary-action" id="detectTextBtn">检测文本</button>
+          </div>
+
+          <div class="tab-page" id="configPage">
+            <div class="config-grid">
+              <div class="field-group"><label for="cfgOpenaiBase">检测 API Base</label><input id="cfgOpenaiBase" /></div>
+              <div class="field-group"><label for="cfgOpenaiKey">检测 API Key</label><input id="cfgOpenaiKey" type="password" /></div>
+              <div class="field-group"><label for="cfgOpenaiModel">检测模型</label><input id="cfgOpenaiModel" /></div>
+              <div class="field-group"><label for="cfgRefinerBase">润色 API Base</label><input id="cfgRefinerBase" /></div>
+              <div class="field-group"><label for="cfgRefinerKey">润色 API Key</label><input id="cfgRefinerKey" type="password" /></div>
+              <div class="field-group"><label for="cfgRefinerModel">润色模型</label><input id="cfgRefinerModel" /></div>
+              <div class="field-group"><label for="cfgRefinerTemperature">润色 Temperature</label><input id="cfgRefinerTemperature" type="number" min="0" max="2" step="0.1" /></div>
+              <div class="field-row">
+                <div class="field-group"><label for="cfgApiConcurrency">API 并发</label><input id="cfgApiConcurrency" type="number" min="1" max="64" /></div>
+                <div class="field-group"><label for="cfgAigcThreshold">默认阈值</label><input id="cfgAigcThreshold" type="number" min="0" max="1" step="0.01" /></div>
+              </div>
+              <div class="field-group"><label>融合权重</label><div class="weights-grid" id="weightsGrid"></div></div>
+            </div>
+            <button class="primary-action" id="saveConfigBtn">保存配置</button>
+          </div>
+        </aside>
+
+        <section class="results-panel">
+          <div class="run-panel" id="runPanel">
+            <div class="run-meta">
+              <strong id="runStage">等待检测</strong>
+              <span id="runMessage">提交任务后会显示运行状态</span>
+            </div>
+            <div class="progress-track">
+              <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <span class="progress-text" id="progressText">0%</span>
+          </div>
+
+          <div class="summary-grid">
+            <div class="metric">
+              <span>段落</span>
+              <strong id="totalMetric">0</strong>
+            </div>
+            <div class="metric">
+              <span>AI 判定</span>
+              <strong id="aiMetric">0</strong>
+            </div>
+            <div class="metric">
+              <span>AI 比例</span>
+              <strong id="ratioMetric">0%</strong>
+            </div>
+            <div class="metric">
+              <span>平均分</span>
+              <strong id="avgMetric">-</strong>
+            </div>
+            <div class="metric refine-metric">
+              <span>已修改</span>
+              <strong id="changedMetric">0</strong>
+            </div>
+            <div class="metric refine-metric">
+              <span>总轮次</span>
+              <strong id="roundsMetric">0</strong>
+            </div>
+          </div>
+
+          <div class="distribution">
+            <div class="section-head">
+              <h2>分数分布</h2>
+              <span id="engineMeta">未检测</span>
+            </div>
+            <div class="bars" id="bars"></div>
+          </div>
+
+          <div class="section-head">
+            <h2>逐段结果</h2>
+            <div class="tools">
+              <button class="tool-btn" id="exportJsonBtn" disabled>导出 JSON</button>
+              <button class="tool-btn" id="exportCsvBtn" disabled>导出 CSV</button>
+              <input id="filterInput" type="search" placeholder="筛选段落" />
+              <select id="labelFilter">
+                <option value="all">全部</option>
+                <option value="ai">AI</option>
+                <option value="human">人工</option>
+                <option value="unknown">未知</option>
+              </select>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>序号</th>
+                  <th>分数</th>
+                  <th>标签</th>
+                  <th>方法</th>
+                  <th>引擎评分</th>
+                  <th>润色</th>
+                  <th>段落</th>
+                </tr>
+              </thead>
+              <tbody id="resultRows">
+                <tr class="empty-row">
+                  <td colspan="7">等待检测</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
