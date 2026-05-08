@@ -188,11 +188,11 @@ def create_job(title: str, worker, *args):
     return job_id
 
 
-def run_detection(paragraphs, engine_name: str | None, threshold: float | None, job_id: str | None = None):
+def run_detection(paragraphs, threshold: float | None, job_id: str | None = None):
     if job_id:
         update_job(job_id, state="running", stage="初始化引擎", progress=20, message=f"段落数 {len(paragraphs)}")
     config = load_config(os.path.join(PROJECT_ROOT, "configs", "default.yaml"))
-    args = argparse.Namespace(engine=engine_name or None, threshold=threshold)
+    args = argparse.Namespace(engine=None, threshold=threshold)
     engine = build_engine(config, args)
     if job_id:
         update_job(job_id, stage="执行检测", progress=42, message=f"引擎 {engine.mode}")
@@ -313,7 +313,6 @@ def run_text_job(job_id: str, payload: dict):
             raise ValueError("没有提取到有效段落")
         result = run_detection(
             paragraphs,
-            payload.get("engine"),
             float(payload["threshold"]) if payload.get("threshold") not in (None, "") else None,
             job_id=job_id,
         )
@@ -331,7 +330,7 @@ def run_text_refine_job(job_id: str, payload: dict):
         if not paragraphs:
             raise ValueError("没有提取到有效段落")
         config = load_config(str(CONFIG_PATH))
-        args = argparse.Namespace(engine=payload.get("engine") or None, threshold=float(payload["threshold"]) if payload.get("threshold") not in (None, "") else None)
+        args = argparse.Namespace(engine=None, threshold=float(payload["threshold"]) if payload.get("threshold") not in (None, "") else None)
         update_job(job_id, stage="初始化检测引擎", progress=16, message=f"段落数 {len(paragraphs)}")
         engine = build_engine(config, args)
         update_job(job_id, stage="初检", progress=30, message=f"引擎 {engine.mode}")
@@ -368,7 +367,6 @@ def run_file_job(job_id: str, fields: dict, uploaded: dict):
         threshold = fields.get("threshold")
         result = run_detection(
             paragraphs,
-            fields.get("engine"),
             float(threshold) if threshold not in (None, "") else None,
             job_id=job_id,
         )
@@ -400,7 +398,7 @@ def run_file_refine_job(job_id: str, fields: dict, uploaded: dict):
         if not paragraphs:
             raise ValueError("没有提取到有效段落")
         threshold = fields.get("threshold")
-        args = argparse.Namespace(engine=fields.get("engine") or None, threshold=float(threshold) if threshold not in (None, "") else None)
+        args = argparse.Namespace(engine=None, threshold=float(threshold) if threshold not in (None, "") else None)
         update_job(job_id, stage="初始化检测引擎", progress=16, message=f"段落数 {len(paragraphs)}")
         engine = build_engine(config, args)
         update_job(job_id, stage="初检", progress=30, message=f"引擎 {engine.mode}")

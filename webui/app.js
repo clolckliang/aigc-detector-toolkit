@@ -28,7 +28,6 @@ function setStatus(text, mode = "") {
 function getOptions() {
   const threshold = $("threshold").value;
   const options = {
-    engine: $("engine").value,
     threshold: threshold === "" ? null : Number(threshold),
     min_length: Number($("minLength").value || 30),
   };
@@ -245,7 +244,6 @@ async function detectFile() {
   const form = new FormData();
   form.append("file", state.file);
   const options = getOptions();
-  form.append("engine", options.engine);
   if (options.threshold !== null) form.append("threshold", String(options.threshold));
   if ($("taskMode").value === "refine") {
     form.append("refine_threshold", String(options.refine_threshold));
@@ -397,7 +395,7 @@ async function saveConfig() {
     ensemble[`${input.dataset.weight}_weight`] = Number(input.value || 0);
   });
   const payload = {
-    engine: { default: $("engine").value || "ensemble", ensemble },
+    engine: { default: "ensemble", ensemble },
     openai_api: {
       api_base: $("cfgOpenaiBase").value,
       api_key: $("cfgOpenaiKey").value,
