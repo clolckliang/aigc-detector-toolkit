@@ -69,7 +69,17 @@ uv run python main.py status
 uv run python webui.py --host 127.0.0.1 --port 8765
 ```
 
-打开 `http://127.0.0.1:8765` 后可直接上传 `.docx` / `.md` / `.txt`，也可以粘贴文本进行检测。WebUI 复用 `configs/default.yaml` 和现有检测引擎配置。
+打开 `http://127.0.0.1:8765` 后可直接上传 `.docx` / `.md` / `.txt`，也可以粘贴文本进行检测。WebUI 是 React + Vite 构建的专业工作台，仍由 `webui.py` 托管静态产物和后端 API。
+
+WebUI 支持：
+
+- 检测 / 润色降重两种任务模式，复用 `configs/default.yaml` 的引擎权重、阈值和 API 配置
+- 任务运行状态、进度、失败提示和中断任务
+- 分数分布、核心指标、引擎权重概览
+- 逐段解释：综合分、标签、引擎贡献、风险原因
+- 降重结果三栏视图：原文 / 改写 / Diff
+- 对单个段落执行手动修改、单段复检、单段重新润色
+- JSON / CSV 导出
 
 ### 降 AIGC 率（refine）
 
@@ -206,6 +216,33 @@ local_logprob:
   model_name_or_path: "/path/to/local/causal-lm"
   device: "cpu"
   method: "logrank"
+```
+
+## WebUI 开发
+
+WebUI 前端源码位于 `webui_src/`，使用 React + Vite。生产构建输出到 `webui/`，由 `webui.py` 直接托管，因此普通用户只需要运行 Python 服务。
+
+```bash
+# 安装前端依赖
+npm install
+
+# 开发模式：先启动 Python API，再启动 Vite
+uv run python webui.py --host 127.0.0.1 --port 8765
+npm run dev
+
+# 生产构建：输出到 webui/
+npm run build
+
+# 生产运行：仍然使用 Python 入口
+uv run python webui.py --host 127.0.0.1 --port 8765
+```
+
+开发模式下 Vite 会把 `/api/*` 代理到 `http://127.0.0.1:8765`。提交前应运行：
+
+```bash
+npm run build
+python -m py_compile webui.py core/refiner.py
+env UV_CACHE_DIR=/tmp/uv-cache uv run python -m unittest discover -s tests
 ```
 
 ## 模型训练
@@ -378,6 +415,8 @@ aigc-detector-toolkit/
 ├── main.py                          # CLI 主入口（detect/batch/refine/eval/status/test）
 ├── train.py                         # 模型训练入口
 ├── pyproject.toml                   # uv 项目配置，含可选依赖组
+├── package.json                     # React/Vite WebUI 前端依赖与构建脚本
+├── vite.config.js                   # WebUI 构建配置，输出到 webui/
 ├── requirements.txt
 ├── configs/
 │   └── default.yaml                 # 默认配置（引擎权重、API、阈值）
@@ -394,6 +433,9 @@ aigc-detector-toolkit/
 │   └── progress.py                  # 进度条工具
 ├── extractors/                      # 文档段落提取（docx/md/txt）
 ├── reporters/                       # 输出报告（终端/txt/json/html）
+├── webui.py                         # WebUI 后端 API + 静态文件托管
+├── webui/                           # React 构建产物（python webui.py 托管）
+├── webui_src/                       # React + Vite 前端源码
 ├── models/
 │   ├── fengci/
 │   │   ├── aigc_detector_model.joblib
