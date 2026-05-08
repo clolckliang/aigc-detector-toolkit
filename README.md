@@ -41,6 +41,8 @@ uv sync --extra local-logprob
 uv sync --extra all
 ```
 
+WebUI 前端开发需要 Node.js 20+ 和 npm；普通运行 `webui.py` 不需要重新构建前端。
+
 ### 检测
 
 ```bash
@@ -203,7 +205,7 @@ threshold:
   aigc_threshold: 0.5
 ```
 
-不配置 API key 时自动退化为 FengCi0 + HC3 双引擎。
+不配置 API key 时会使用可用的本地引擎。基础安装通常至少可用 FengCi0；安装 `uv sync --extra hc3` 后可加入 HC3。
 
 ### 本地 Logprob 引擎（可选）
 
@@ -316,8 +318,9 @@ uv run python train.py --engine hc3 --data-dir data/train/ --epochs 50 --batch-s
 | OpenAI 兼容 API | ~0.5s/段 | - | 需要 | LLM logprobs 困惑度 |
 | Binoculars | ~0.5s/段 | - | 需要 | 双视角 ppl/x_ppl 比值（ICLR 2024） |
 | Local Logprob | 取决于模型 | 用户配置 | - | 本地 LM LogRank / perplexity |
+| LastDe | ~0.5s/段 | - | 需要 | 多尺度分布熵（ICLR 2025） |
 
-默认融合权重：FengCi0 30% + HC3 20% + OpenAI API 25% + Binoculars 25%。
+默认融合权重：FengCi0 30% + HC3 20% + OpenAI API 25% + Binoculars 25%；Local Logprob 和 LastDe 默认 0，可在配置中开启。
 
 ## 输出示例
 
@@ -337,6 +340,7 @@ uv run python train.py --engine hc3 --data-dir data/train/ --epochs 50 --batch-s
   OpenAI 兼容 API: ✗ (权重 0%)
   Binoculars    : ✗ (权重 0%)
   Local Logprob : ✗ (权重 0%)
+  LastDe        : ✗ (权重 0%)
 ------------------------------------------------------------
 总段落数:     454
 判定为人工撰写: 444 (97.8%)
@@ -430,6 +434,7 @@ aigc-detector-toolkit/
 │   ├── openai_adapter.py            # OpenAI 兼容 API logprobs
 │   ├── binoculars_adapter.py        # Binoculars 双视角检测
 │   ├── local_logprob_adapter.py     # 可选本地 LM LogRank
+│   ├── lastde_adapter.py            # LastDe 多尺度分布熵检测
 │   └── progress.py                  # 进度条工具
 ├── extractors/                      # 文档段落提取（docx/md/txt）
 ├── reporters/                       # 输出报告（终端/txt/json/html）
