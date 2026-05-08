@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from .evaluation import binary_metrics, roc_auc, threshold_scan
+from .progress import progress_iter
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +180,7 @@ class FengCiTrainer:
 
     def _extract_features(self, texts: List[str]) -> np.ndarray:
         features = []
-        for text in texts:
+        for text in progress_iter(texts, total=len(texts), desc="FengCi 特征"):
             fv = self.feature_extractor.extract_features(text)
             features.append(fv)
         return np.array(features, dtype=np.float64)
@@ -190,20 +191,14 @@ class FengCiTrainer:
 
         candidates = []
 
-        # Random Forest
-        rf = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42)
-        rf.fit(X_train, y_train)
-        candidates.append(("feature_rf", rf, X_val, y_val))
-
-        # Logistic Regression
-        lr = LogisticRegression(max_iter=1000, random_state=42)
-        lr.fit(X_train, y_train)
-        candidates.append(("feature_logreg", lr, X_val, y_val))
-
-        # Gradient Boosting
-        gb = GradientBoostingClassifier(n_estimators=100, max_depth=5, random_state=42)
-        gb.fit(X_train, y_train)
-        candidates.append(("feature_gb", gb, X_val, y_val))
+        models = [
+            ("feature_rf", RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42)),
+            ("feature_logreg", LogisticRegression(max_iter=1000, random_state=42)),
+            ("feature_gb", GradientBoostingClassifier(n_estimators=100, max_depth=5, random_state=42)),
+        ]
+        for name, model in progress_iter(models, total=len(models), desc="训练候选模型", unit="个"):
+            model.fit(X_train, y_train)
+            candidates.append((name, model, X_val, y_val))
 
         return candidates
 
@@ -338,7 +333,7 @@ class HC3Trainer:
         best_state = None
         no_improve = 0
 
-        for epoch in range(1, epochs + 1):
+        for epoch in progress_iter(range(1, epochs + 1), total=epochs, desc="HC3 Epoch", unit="轮"):
             model.train()
             perm = torch.randperm(len(X_train_t))
             total_loss = 0.0

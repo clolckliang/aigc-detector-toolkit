@@ -16,6 +16,8 @@ import asyncio
 from datetime import datetime
 from typing import Callable, Dict, List, Optional, Tuple
 
+from .progress import progress_bar
+
 logger = logging.getLogger(__name__)
 
 
@@ -348,6 +350,13 @@ class RefinementEngine:
         async with semaphore:
             return await asyncio.to_thread(detect_fn, text)
 
+    @staticmethod
+    async def _with_index(index: int, coro):
+        try:
+            return index, await coro
+        except Exception as e:
+            return index, e
+
     async def _refine_one_iterative_async(
         self,
         para: Dict,
@@ -502,6 +511,7 @@ class RefinementEngine:
         score_threshold: float = 0.4,
         max_rounds: int = 2,
         detect_concurrency: Optional[int] = None,
+        show_progress: bool = True,
     ) -> List[Dict]:
         """并发执行“单段润色 -> 单段检测 -> 循环调整”的降重工作流。"""
         client = self._get_async_client()
@@ -510,19 +520,46 @@ class RefinementEngine:
         start_time = time.time()
 
         tasks = [
-            self._refine_one_iterative_async(
-                para,
-                score_info,
-                score_threshold,
-                max(1, max_rounds),
-                refine_semaphore,
-                detect_semaphore,
-                client,
-                detect_fn,
-            )
-            for para, score_info in zip(paragraphs, aigc_scores)
+            asyncio.create_task(self._with_index(
+                i,
+                self._refine_one_iterative_async(
+                    para,
+                    score_info,
+                    score_threshold,
+                    max(1, max_rounds),
+                    refine_semaphore,
+                    detect_semaphore,
+                    client,
+                    detect_fn,
+                ),
+            ))
+            for i, (para, score_info) in enumerate(zip(paragraphs, aigc_scores))
         ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = [None] * len(tasks)
+        completed = changed_count = rounds = 0
+        bar_ctx = progress_bar(total=len(tasks), desc="循环润色") if show_progress else None
+        try:
+            if bar_ctx:
+                with bar_ctx as bar:
+                    for task in asyncio.as_completed(tasks):
+                        i, result = await task
+                        results[i] = result
+                        completed += 1
+                        if isinstance(result, dict):
+                            changed_count += int(result.get('changed', False))
+                            rounds += result.get('rounds', 0)
+                            bar.set_postfix(changed=changed_count, rounds=rounds)
+                        bar.update(1)
+            else:
+                for task in asyncio.as_completed(tasks):
+                    i, result = await task
+                    results[i] = result
+                    completed += 1
+        except Exception:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            raise
         await client.close()
 
         final_results = []
@@ -559,6 +596,7 @@ class RefinementEngine:
         paragraphs: List[Dict],
         aigc_scores: List[Dict],
         score_threshold: float = 0.4,
+        show_progress: bool = True,
     ) -> List[Dict]:
         """并发批量润色高风险段落"""
         client = self._get_async_client()
@@ -566,10 +604,37 @@ class RefinementEngine:
         start_time = time.time()
 
         tasks = [
-            self._refine_one_async(para, score_info, score_threshold, semaphore, client)
-            for para, score_info in zip(paragraphs, aigc_scores)
+            asyncio.create_task(self._with_index(
+                i,
+                self._refine_one_async(para, score_info, score_threshold, semaphore, client),
+            ))
+            for i, (para, score_info) in enumerate(zip(paragraphs, aigc_scores))
         ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = [None] * len(tasks)
+        completed = changed_count = skipped_count = 0
+        bar_ctx = progress_bar(total=len(tasks), desc="并发润色") if show_progress else None
+        try:
+            if bar_ctx:
+                with bar_ctx as bar:
+                    for task in asyncio.as_completed(tasks):
+                        i, result = await task
+                        results[i] = result
+                        completed += 1
+                        if isinstance(result, dict):
+                            changed_count += int(result.get('changed', False))
+                            skipped_count += int(not result.get('changed', False) and result.get('strategy') == 'skip')
+                            bar.set_postfix(changed=changed_count, skipped=skipped_count)
+                        bar.update(1)
+            else:
+                for task in asyncio.as_completed(tasks):
+                    i, result = await task
+                    results[i] = result
+                    completed += 1
+        except Exception:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            raise
 
         await client.close()
 

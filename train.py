@@ -4,6 +4,7 @@ import logging
 import sys
 
 from core.trainer import FengCiTrainer, HC3Trainer, load_text_dir, load_labeled_jsonl
+from core.progress import ProgressManager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -50,24 +51,31 @@ def main():
 
     args = parser.parse_args()
 
-    # Load data
-    logger.info("加载训练数据: %s", args.data_dir)
-    texts, labels = load_text_dir(args.data_dir)
+    with ProgressManager(enabled=True) as progress:
+        load_task = progress.add_task("加载训练数据", total=1, unit="项")
+        logger.info("加载训练数据: %s", args.data_dir)
+        texts, labels = load_text_dir(args.data_dir)
+        progress.advance(load_task, 1, status=f"{len(texts)} 条")
 
-    eval_texts, eval_labels = None, None
-    if args.eval_data:
-        logger.info("加载验证集: %s", args.eval_data)
-        eval_texts, eval_labels = load_labeled_jsonl(args.eval_data)
+        eval_texts, eval_labels = None, None
+        if args.eval_data:
+            eval_task = progress.add_task("加载验证集", total=1, unit="项")
+            logger.info("加载验证集: %s", args.eval_data)
+            eval_texts, eval_labels = load_labeled_jsonl(args.eval_data)
+            progress.advance(eval_task, 1, status=f"{len(eval_texts)} 条")
 
     # Train
     if args.engine == "fengci":
         output_dir = args.output_dir or "models/fengci"
         trainer = FengCiTrainer(output_dir=output_dir)
-        result = trainer.train(
-            texts, labels,
-            eval_texts=eval_texts, eval_labels=eval_labels,
-            augment=not args.no_augment,
-        )
+        with ProgressManager(enabled=True) as progress:
+            train_task = progress.add_task("训练 FengCi0", total=1, unit="项")
+            result = trainer.train(
+                texts, labels,
+                eval_texts=eval_texts, eval_labels=eval_labels,
+                augment=not args.no_augment,
+            )
+            progress.advance(train_task, 1, status="完成")
         logger.info("=" * 50)
         logger.info("FengCi0 训练完成!")
         logger.info("最佳模型: %s", result["best_model"])
@@ -81,12 +89,15 @@ def main():
         output_dir = args.output_dir or "models/hc3"
         trainer = HC3Trainer(output_dir=output_dir,
                              embedding_model=args.embedding_model)
-        result = trainer.train(
-            texts, labels,
-            eval_texts=eval_texts, eval_labels=eval_labels,
-            epochs=args.epochs, batch_size=args.batch_size,
-            lr=args.lr, patience=args.patience,
-        )
+        with ProgressManager(enabled=True) as progress:
+            train_task = progress.add_task("训练 HC3", total=args.epochs, unit="轮")
+            result = trainer.train(
+                texts, labels,
+                eval_texts=eval_texts, eval_labels=eval_labels,
+                epochs=args.epochs, batch_size=args.batch_size,
+                lr=args.lr, patience=args.patience,
+            )
+            progress.update(train_task, completed=args.epochs, status="完成")
         logger.info("=" * 50)
         logger.info("HC3 CNN 训练完成!")
         m = result["metrics"]

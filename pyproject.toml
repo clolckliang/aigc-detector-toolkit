@@ -12,6 +12,7 @@ dependencies = [
     "jieba==0.42.1",
     "openai>=1.0",
     "pyyaml>=6.0",
+    "rich>=13",
     "tqdm>=4.66",
 ]
 

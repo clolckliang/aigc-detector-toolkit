@@ -38,6 +38,7 @@ from core.evaluation import (
     summarize_engine_metrics,
     write_eval_report,
 )
+from core.progress import ProgressManager
 from core.refiner import RefinementEngine, generate_refinement_report, export_refined_docx
 
 
@@ -223,21 +224,27 @@ def extract_paragraphs(file_path, config):
         raise ValueError(f"不支持的文件格式: {ext}（支持 .docx / .md / .txt）")
 
 
-def detect_file(engine, file_path, config, args):
+def detect_file(engine, file_path, config, args, progress=None):
     print(f"\n📄 正在检测: {file_path}")
     print("-" * 60)
 
+    extract_task = progress.add_task("提取文本", total=1, unit="项") if progress else None
     print("  提取段落中...")
     paragraphs = extract_paragraphs(file_path, config)
+    if progress:
+        progress.advance(extract_task, 1, status=f"{len(paragraphs)} 段")
     print(f"  提取到 {len(paragraphs)} 个段落")
 
     if not paragraphs:
         print("  ❌ 未提取到有效段落！")
         return None
 
+    detect_task = progress.add_task("AIGC 检测", total=1, unit="项", status=engine.mode) if progress else None
     texts = [p["text"] for p in paragraphs]
     print(f"  开始 AIGC 检测（引擎: {engine.mode}）...")
     results = engine.detect_batch(texts, show_progress=True)
+    if progress:
+        progress.advance(detect_task, 1, status="完成")
 
     engine_status = engine.get_status()
     output_dir = getattr(args, "output", None) or config.get("output", {}).get("dir")
@@ -253,19 +260,28 @@ def detect_file(engine, file_path, config, args):
     if getattr(args, "verbose", False) or config.get("output", {}).get("verbose", False):
         print_detail(paragraphs, results)
 
+    output_total = sum(1 for key in ("text", "json", "html") if config.get("output", {}).get(key, True))
+    output_task = progress.add_task("生成报告", total=output_total, unit="项") if progress and output_total else None
+
     if config.get("output", {}).get("text", True):
         rp = os.path.join(output_dir, f"AIGC检测报告_{basename}_{timestamp}.txt")
         generate_text_report(paragraphs, results, engine_status, rp, file_path)
+        if progress:
+            progress.advance(output_task, 1, status="文本")
         print(f"  📝 文本报告: {rp}")
 
     if config.get("output", {}).get("json", True):
         jp = os.path.join(output_dir, f"AIGC检测结果_{basename}_{timestamp}.json")
         generate_json_report(paragraphs, results, engine_status, jp, file_path)
+        if progress:
+            progress.advance(output_task, 1, status="JSON")
         print(f"  📊 JSON报告: {jp}")
 
     if config.get("output", {}).get("html", True):
         hp = os.path.join(output_dir, f"AIGC可视化报告_{basename}_{timestamp}.html")
         generate_html_report(paragraphs, results, engine_status, hp, file_path)
+        if progress:
+            progress.advance(output_task, 1, status="HTML")
         print(f"  🌐 HTML报告: {hp}")
 
     return results
@@ -278,8 +294,11 @@ def cmd_detect(args, config):
     if not os.path.exists(fp):
         print(f"❌ 文件不存在: {fp}")
         return 1
-    engine = build_engine(config, args)
-    detect_file(engine, fp, config, args)
+    with ProgressManager(enabled=True) as progress:
+        build_task = progress.add_task("初始化引擎", total=1, unit="项")
+        engine = build_engine(config, args)
+        progress.advance(build_task, 1, status=engine.mode)
+        detect_file(engine, fp, config, args, progress=progress)
     return 0
 
 
@@ -300,15 +319,23 @@ def cmd_batch(args, config):
     print(f"\n📁 批量检测: {dp}")
     print(f"  找到 {len(files)} 个文件")
 
-    engine = build_engine(config, args)
-    all_results = []
-    for fp in files:
-        try:
-            r = detect_file(engine, fp, config, args)
-            if r:
-                all_results.append((fp, r))
-        except Exception as e:
-            print(f"  ❌ 失败 [{fp}]: {e}")
+    with ProgressManager(enabled=True) as progress:
+        build_task = progress.add_task("初始化引擎", total=1, unit="项")
+        engine = build_engine(config, args)
+        progress.advance(build_task, 1, status=engine.mode)
+        file_task = progress.add_task("批量文件", total=len(files), unit="个")
+        all_results = []
+        failed = 0
+        for fp in files:
+            try:
+                r = detect_file(engine, fp, config, args, progress=progress)
+                if r:
+                    all_results.append((fp, r))
+                progress.advance(file_task, 1, failed=failed)
+            except Exception as e:
+                failed += 1
+                progress.advance(file_task, 1, failed=failed)
+                print(f"  ❌ 失败 [{fp}]: {e}")
 
     if all_results:
         ta = sum(1 for _, rs in all_results for r in rs if r["label"] == "ai")
@@ -346,12 +373,22 @@ def cmd_status(args, config):
 
 def cmd_eval(args, config):
     """评测标注集并输出指标与阈值建议"""
-    dataset = load_labeled_dataset(args.dataset)
-    engine = build_engine(config, args)
-    texts = [row["text"] for row in dataset]
-    results = engine.detect_batch(texts, show_progress=True)
-    engine_status = engine.get_status()
-    metrics = summarize_engine_metrics(dataset, results, engine_status["threshold"])
+    with ProgressManager(enabled=True) as progress:
+        load_task = progress.add_task("加载评测集", total=1, unit="项")
+        dataset = load_labeled_dataset(args.dataset)
+        progress.advance(load_task, 1, status=f"{len(dataset)} 条")
+
+        build_task = progress.add_task("初始化引擎", total=1, unit="项")
+        engine = build_engine(config, args)
+        progress.advance(build_task, 1, status=engine.mode)
+
+        texts = [row["text"] for row in dataset]
+        results = engine.detect_batch(texts, show_progress=True)
+        engine_status = engine.get_status()
+
+        metrics_task = progress.add_task("计算指标", total=1, unit="项")
+        metrics = summarize_engine_metrics(dataset, results, engine_status["threshold"])
+        progress.advance(metrics_task, 1, status="完成")
 
     fused = metrics["fused"]["metrics"]
     print("\n评测结果")
@@ -376,7 +413,10 @@ def cmd_eval(args, config):
     if not output:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output = os.path.join(PROJECT_ROOT, "eval_reports", f"eval_{timestamp}.json")
-    report_path = write_eval_report(output, args.dataset, dataset, results, engine_status, metrics)
+    with ProgressManager(enabled=True) as progress:
+        report_task = progress.add_task("输出评测报告", total=1, unit="项")
+        report_path = write_eval_report(output, args.dataset, dataset, results, engine_status, metrics)
+        progress.advance(report_task, 1, status="JSON")
     print(f"JSON报告:     {report_path}")
     print("=" * 60)
     return 0
@@ -403,23 +443,29 @@ def cmd_refine(args, config):
     ext = os.path.splitext(fp)[1].lower()
     ec = config.get("extraction", {})
     min_len = ec.get("min_paragraph_length", 30)
-    if ext == ".docx":
-        paragraphs = extract_from_docx(fp, min_length=min_len)
-    elif ext == ".md":
-        paragraphs = extract_from_md(fp, min_length=min_len)
-    elif ext == ".txt":
-        paragraphs = extract_from_txt(fp, min_length=min_len)
-    else:
-        print(f"❌ 不支持: {ext}")
-        return 1
+    with ProgressManager(enabled=True) as progress:
+        extract_task = progress.add_task("提取文本", total=1, unit="项")
+        if ext == ".docx":
+            paragraphs = extract_from_docx(fp, min_length=min_len)
+        elif ext == ".md":
+            paragraphs = extract_from_md(fp, min_length=min_len)
+        elif ext == ".txt":
+            paragraphs = extract_from_txt(fp, min_length=min_len)
+        else:
+            print(f"❌ 不支持: {ext}")
+            return 1
+        progress.advance(extract_task, 1, status=f"{len(paragraphs)} 段")
     print(f"  提取到 {len(paragraphs)} 个段落")
 
     # ── Step 2: AIGC 检测 ──
     print("\n🔍 Step 1: AIGC 检测...")
-    engine = build_engine(config, args)
-    texts = [p["text"] for p in paragraphs]
-    results = engine.detect_batch(texts, show_progress=True)
-    engine_status = engine.get_status()
+    with ProgressManager(enabled=True) as progress:
+        build_task = progress.add_task("初始化引擎", total=1, unit="项")
+        engine = build_engine(config, args)
+        progress.advance(build_task, 1, status=engine.mode)
+        texts = [p["text"] for p in paragraphs]
+        results = engine.detect_batch(texts, show_progress=True)
+        engine_status = engine.get_status()
 
     # 统计
     valid = [r for r in results if r["label"] != "unknown"]
@@ -468,21 +514,24 @@ def cmd_refine(args, config):
     max_rounds = getattr(args, "max_rounds", 2)
     detect_concurrency = getattr(args, "detect_concurrency", None) or perf_cfg.get("api_concurrency", 8)
     if args.no_recheck:
-        refinement_results = asyncio.run(
-            refiner.refine_batch_async(paragraphs, results, score_threshold=threshold)
-        )
+        with ProgressManager(enabled=True):
+            refinement_results = asyncio.run(
+                refiner.refine_batch_async(paragraphs, results, score_threshold=threshold, show_progress=True)
+            )
     else:
         print(f"  循环模式: 每段最多 {max_rounds} 轮，检测并发 {detect_concurrency}")
-        refinement_results = asyncio.run(
-            refiner.refine_batch_iterative_async(
-                paragraphs,
-                results,
-                detect_fn=engine.detect_single,
-                score_threshold=threshold,
-                max_rounds=max_rounds,
-                detect_concurrency=detect_concurrency,
+        with ProgressManager(enabled=True):
+            refinement_results = asyncio.run(
+                refiner.refine_batch_iterative_async(
+                    paragraphs,
+                    results,
+                    detect_fn=engine.detect_single,
+                    score_threshold=threshold,
+                    max_rounds=max_rounds,
+                    detect_concurrency=detect_concurrency,
+                    show_progress=True,
+                )
             )
-        )
 
     changed = [r for r in refinement_results if r["changed"]]
     print(f"  已修改 {len(changed)} 段")
@@ -505,31 +554,37 @@ def cmd_refine(args, config):
     aigc_after_summary = {"ai_ratio": ai_ratio_after} if ai_ratio_after is not None else None
 
     report_path = os.path.join(output_dir, f"降AIGC报告_{basename}_{timestamp}.txt")
-    generate_refinement_report(
-        refinement_results, report_path,
-        aigc_before=aigc_before_summary, aigc_after=aigc_after_summary,
-    )
-    print(f"\n  📝 润色报告: {report_path}")
-
     docx_path = os.path.join(output_dir, f"润色后文本_{basename}_{timestamp}.docx")
-    export_refined_docx(paragraphs, refinement_results, docx_path)
-    print(f"  📄 润色后DOCX: {docx_path}")
-
-    # JSON 结果
     json_path = os.path.join(output_dir, f"润色结果_{basename}_{timestamp}.json")
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump({
-            "summary": {
-                "total": len(refinement_results),
-                "changed": len(changed),
-                "aigc_before": ai_ratio_before,
-                "aigc_after": ai_ratio_after,
-            },
-            "results": [
-                {k: v for k, v in r.items() if k != "original"}
-                for r in refinement_results
-            ],
-        }, f, ensure_ascii=False, indent=2)
+    with ProgressManager(enabled=True) as progress:
+        output_task = progress.add_task("导出结果", total=3, unit="项")
+        generate_refinement_report(
+            refinement_results, report_path,
+            aigc_before=aigc_before_summary, aigc_after=aigc_after_summary,
+        )
+        progress.advance(output_task, 1, status="报告")
+
+        export_refined_docx(paragraphs, refinement_results, docx_path)
+        progress.advance(output_task, 1, status="DOCX")
+
+        # JSON 结果
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "summary": {
+                    "total": len(refinement_results),
+                    "changed": len(changed),
+                    "aigc_before": ai_ratio_before,
+                    "aigc_after": ai_ratio_after,
+                },
+                "results": [
+                    {k: v for k, v in r.items() if k != "original"}
+                    for r in refinement_results
+                ],
+            }, f, ensure_ascii=False, indent=2)
+        progress.advance(output_task, 1, status="JSON")
+
+    print(f"\n  📝 润色报告: {report_path}")
+    print(f"  📄 润色后DOCX: {docx_path}")
     print(f"  📊 JSON: {json_path}")
 
     print("\n" + "=" * 60)
@@ -618,10 +673,12 @@ def main():
         return 0
 
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.INFO if args.verbose else logging.WARNING,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+    for noisy_logger in ("httpx", "httpcore", "openai"):
+        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
     config_path = args.config or os.path.join(PROJECT_ROOT, "configs", "default.yaml")
     config = load_config(config_path)
