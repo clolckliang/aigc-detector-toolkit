@@ -1,62 +1,61 @@
 # AIGC Detector Toolkit
 
-中文 AI 生成文本 (AIGC) **检测 + 降重**工具，六引擎融合检测，一键降 AIGC 率。
+中文 AIGC 文本检测、逐段解释和降重润色工具。项目提供命令行、WebUI、训练脚本和多格式报告导出，适合论文、报告、课程文档和长文本批量审阅。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-## 特性
+## 核心能力
 
-- **六引擎融合检测**
-  - **FengCi0** — 12 维文本特征 + 随机森林，毫秒级响应，无需 API
-  - **HC3+m3e** — m3e-base 语义编码 + CNN 分类器，本地运行
-  - **OpenAI 兼容 API** — 利用 LLM 的 logprobs 计算困惑度
-  - **Binoculars** — 双视角 perplexity 比值（ICLR 2024 论文方法）
-  - **Local Logprob** — 本地 causal LM 的 LogRank / perplexity（默认关闭）
-  - **LastDe** — 多尺度分布熵检测（ICLR 2025）
-- **一键降 AIGC 率（refine）** — 检测 → 自动分类 → LLM 润色 → 单段循环复测
-- **模型训练** — 支持 FengCi0 RF 和 HC3 CNN 重新训练，含数据增强
-- **数据生成** — 通过 LLM API 批量生成 AI 训练数据
-- **多格式支持** — `.docx` / `.md` / `.txt`
-- **多格式输出** — 终端 / TXT / JSON / HTML 可视化报告
+- **多引擎融合检测**：FengCi0、HC3+m3e、OpenAI 兼容 API、Binoculars、Local Logprob、LastDe。
+- **逐段解释**：输出综合分、标签、引擎明细、风险原因和分数分布。
+- **降 AIGC 率润色**：检测高风险段落后，按段自动选择润色策略，并支持“润色 → 复测 → 继续调整”的循环。
+- **润色前后对比**：WebUI 和 HTML 报告展示每段润色前分数、润色后分数和变化值。
+- **多格式输入输出**：支持 `.docx`、`.md`、`.txt`，输出 TXT、JSON、CSV、HTML、DOCX。
+- **WebUI 工作台**：支持文件上传、文本粘贴、单段复检、单段重新润色、配置编辑和结果导出。
+- **模型训练与评测**：支持 FengCi0、HC3 训练，支持 JSONL/CSV 标注集评测。
 
-## 快速开始
+## 安装
 
-### 安装
+推荐使用 `uv` 管理 Python 依赖。
 
 ```bash
-# 克隆仓库
 git clone https://github.com/clolckliang/aigc-detector-toolkit.git
 cd aigc-detector-toolkit
 
-# 安装依赖
+# 基础依赖
 uv sync
 
-# 可选：HC3 深度学习引擎
+# 开发依赖，包含 pytest
+uv sync --group dev
+
+# 可选：HC3 本地深度学习引擎
 uv sync --extra hc3
 
 # 可选：本地 Logprob 引擎
 uv sync --extra local-logprob
 
-# 全部可选引擎
-uv sync --extra all
+# 安装全部可选引擎
+uv sync --extra all --group dev
 ```
 
-WebUI 前端开发需要 Node.js 20+ 和 npm；普通运行 `webui.py` 不需要重新构建前端。
+WebUI 前端开发需要 Node.js 20+ 和 npm。普通使用 `webui.py` 不需要重新构建前端，仓库已包含生产构建产物。
 
-### 检测
+## 快速使用
+
+### 命令行检测
 
 ```bash
-# 快速测试（内置样本）
+# 内置样本快速测试
 uv run python main.py test
 
 # 检测单个文件
 uv run python main.py detect 论文.docx
 
-# 仅用 FengCi0 引擎（最快）
+# 指定检测引擎
 uv run python main.py detect 论文.docx --engine fengci
 
 # 批量检测目录
-uv run python main.py batch ./docs/
+uv run python main.py batch ./docs
 
 # 评测标注集
 uv run python main.py eval examples/eval_sample.jsonl --engine fengci
@@ -65,103 +64,110 @@ uv run python main.py eval examples/eval_sample.jsonl --engine fengci
 uv run python main.py status
 ```
 
+`detect` 默认会在输入文件同目录生成：
+
+- `AIGC检测报告_*.txt`
+- `AIGC检测结果_*.json`
+- `AIGC可视化报告_*.html`
+
 ### WebUI
 
 ```bash
 uv run python webui.py --host 127.0.0.1 --port 8765
 ```
 
-打开 `http://127.0.0.1:8765` 后可直接上传 `.docx` / `.md` / `.txt`，也可以粘贴文本进行检测。WebUI 是 React + Vite 构建的专业工作台，仍由 `webui.py` 托管静态产物和后端 API。
+打开 `http://127.0.0.1:8765`。
 
 WebUI 支持：
 
-- 检测 / 润色降重两种任务模式，复用 `configs/default.yaml` 的引擎权重、阈值和 API 配置
-- 任务运行状态、进度、失败提示和中断任务
-- 分数分布、核心指标、引擎权重概览
-- 逐段解释：综合分、标签、引擎贡献、风险原因
-- 降重结果三栏视图：原文 / 改写 / Diff
-- 对单个段落执行手动修改、单段复检、单段重新润色
-- JSON / CSV 导出
+- 检测 / 润色两种任务模式
+- 上传 `.docx`、`.md`、`.txt` 或直接粘贴文本
+- 配置检测阈值、最小段长、润色阈值、最大轮数和复测并发
+- 查看分数分布、平均分、AI 判定数、已修改数和引擎状态
+- 逐段展开查看引擎贡献、风险原因、原文 / 改写 / Diff
+- 润色结果按段展示 `润色前 → 润色后` 分数和变化值
+- 单段手动修改、单段复检、单段重新润色
+- JSON / CSV 导出，CSV 包含 `score_before`、`score_after`、`score_delta`
 
-### 降 AIGC 率（refine）
+### 降 AIGC 率润色
 
 ```bash
-# 检测模型 API（用于 OpenAI/Binoculars/LastDe 等检测引擎）
-export OPENAI_API_KEY="your-key-here"
-export OPENAI_BASE_URL="https://api.openai.com/v1"   # 可选
-export OPENAI_MODEL="gpt-4o-mini"                     # 可选
+# 检测模型 API
+export OPENAI_API_KEY="your-key"
+export OPENAI_BASE_URL="https://api.openai.com/v1"
+export OPENAI_MODEL="gpt-4o-mini"
 
-# 润色模型 API（可与检测模型不同；留空则复用 OPENAI_*）
+# 润色模型 API，可与检测模型不同；不配置时复用 OPENAI_*
 export REFINER_API_KEY="your-refiner-key"
-export REFINER_BASE_URL="https://api.deepseek.com/v1" # 可选
-export REFINER_MODEL="deepseek-chat"                  # 可选
+export REFINER_BASE_URL="https://api.deepseek.com/v1"
+export REFINER_MODEL="deepseek-chat"
 
-# 默认阈值 0.4（AIGC > 40% 的段落进入循环润色）
+# 默认阈值 0.4，高于该分数的段落进入润色流程
 uv run python main.py refine 论文.docx
 
-# 更严格的阈值
+# 更严格阈值
 uv run python main.py refine 论文.docx --threshold 0.3
 
-# 单段最多循环 3 轮，并发复测 4 个段落
+# 每段最多 3 轮，复测并发 4
 uv run python main.py refine 论文.docx --max-rounds 3 --detect-concurrency 4
 
-# 命令行临时指定润色模型
+# 临时指定润色模型
 uv run python main.py refine 论文.docx \
   --refiner-api-base https://api.deepseek.com/v1 \
   --refiner-api-key "$DEEPSEEK_API_KEY" \
   --refiner-model deepseek-chat
 
-# 跳过复测
+# 跳过润色后复测
 uv run python main.py refine 论文.docx --no-recheck
 ```
 
-**refine 工作流：**
+`refine` 工作流：
 
-1. 提取文档段落
-2. 六引擎融合逐段检测
-3. 自动分类并选择润色策略：
-   - `refine_cn` — 表达润色：修复语病、去除口语，克制修改
-   - `deai_cn` — 去 AI 味：消除套话、增加个人化表达、细节具体化
-   - `deai_en` — 英文去 AI 化：重写为自然学术表达
-4. 对每个高风险段落执行“润色 → 检测 → 未达标继续调整”的独立循环
-5. 输出报告 + 润色后 DOCX
+1. 提取文档段落。
+2. 使用检测引擎逐段计算 AIGC 分数。
+3. 对超过阈值的段落自动选择策略：
+   - `refine_cn`：中文表达润色，修复语病和口语化表达。
+   - `deai_cn`：中文去 AI 味，减少套话和模板化句式。
+   - `deai_en`：英文去 AI 化，改写为自然学术表达。
+4. 每段独立执行润色和复测，未达标可继续下一轮。
+5. 导出报告和润色后文档。
 
-检测、融合、润色和循环复测统一使用 `core.progress` 管理进度条；交互式终端会优先显示 Rich 面板，非 TTY/CI 环境会自动退化为简洁输出。润色阶段会显示已完成段落、已修改段落和累计循环轮数。
+`refine` 输出文件：
 
-**输出文件：**
-
-| 文件 | 说明 |
-|------|------|
-| `降AIGC报告_*.txt` | 逐段润色详情 + 润色前后对比 |
-| `润色后文本_*.docx` | 润色后完整文本（`[已润色]` 标注） |
-| `润色结果_*.json` | 结构化数据 |
+| 文件 | 用途 |
+| ---- | ---- |
+| `降AIGC报告_*.txt` | 纯文本润色报告 |
+| `降AIGC可视化报告_*.html` | 浏览器查看的润色前后对比报告 |
+| `润色后文本_*.docx` | 可直接替换使用的润色后文本 |
+| `润色结果_*.json` | 结构化润色结果 |
 
 ## 配置
 
-### OpenAI 兼容 API
+默认配置位于 `configs/default.yaml`。环境变量会覆盖配置中的 API 字段。
 
-```bash
-# 方式一：环境变量
-export OPENAI_API_KEY="your-key-here"
-export OPENAI_BASE_URL="https://api.openai.com/v1"
-export OPENAI_MODEL="gpt-4o-mini"
-
-# 方式二：编辑 configs/default.yaml
-```
-
-支持任何 OpenAI 兼容 API：OpenAI、vLLM、Ollama、LiteLLM、SGLang、DeepSeek 等。
-
-### 润色模型 API
-
-`refine` 可以使用不同的大模型分别负责检测和润色：
+### 检测 API
 
 ```yaml
 openai_api:
-  api_base: "https://token-plan-cn.xiaomimimo.com/v1"
+  api_base: "https://api.openai.com/v1"
   api_key: "${OPENAI_API_KEY}"
-  model: "mimo-v2.5"
+  model: "gpt-4o-mini"
   strategy: "perplexity"
+```
 
+支持 OpenAI 兼容 API，包括 OpenAI、DeepSeek、vLLM、Ollama、LiteLLM、SGLang 等。
+
+可用环境变量：
+
+```bash
+export OPENAI_API_KEY="..."
+export OPENAI_BASE_URL="..."
+export OPENAI_MODEL="..."
+```
+
+### 润色 API
+
+```yaml
 refiner_api:
   api_base: "https://api.deepseek.com/v1"
   api_key: "${REFINER_API_KEY}"
@@ -169,26 +175,16 @@ refiner_api:
   temperature: 0.3
 ```
 
-环境变量优先级：
+可用环境变量：
 
 ```bash
-# 检测模型
-export OPENAI_API_KEY="..."
-export OPENAI_BASE_URL="..."
-export OPENAI_MODEL="..."
-
-# 润色模型
 export REFINER_API_KEY="..."
 export REFINER_BASE_URL="..."
 export REFINER_MODEL="..."
 export REFINER_TEMPERATURE="0.3"
 ```
 
-如果 `refiner_api` 和 `REFINER_*` 都没有配置，润色会回退复用 `openai_api`。
-
-### 引擎权重与阈值
-
-编辑 `configs/default.yaml`：
+### 引擎权重和阈值
 
 ```yaml
 engine:
@@ -205,148 +201,99 @@ threshold:
   aigc_threshold: 0.5
 ```
 
-不配置 API key 时会使用可用的本地引擎。基础安装通常至少可用 FengCi0；安装 `uv sync --extra hc3` 后可加入 HC3。
+未配置 API key 时，项目会使用可用的本地引擎。基础安装通常至少可用 FengCi0。
 
-### 本地 Logprob 引擎（可选）
+## 引擎说明
 
-```yaml
-engine:
-  ensemble:
-    local_logprob_weight: 0.20
-
-local_logprob:
-  model_name_or_path: "/path/to/local/causal-lm"
-  device: "cpu"
-  method: "logrank"
-```
+| 引擎 | 运行方式 | 说明 |
+| ---- | -------- | ---- |
+| FengCi0 | 本地 | 12 维文本特征 + 随机森林，响应快，无 API 依赖 |
+| HC3+m3e | 本地 | m3e-base 语义编码 + CNN 分类器 |
+| OpenAI API | API | 通过 OpenAI 兼容接口计算 logprobs / perplexity |
+| Binoculars | API | 双视角 perplexity 比值方法 |
+| Local Logprob | 本地可选 | 使用本地 causal LM 计算 LogRank / perplexity |
+| LastDe | API | 多尺度分布熵检测 |
 
 ## WebUI 开发
 
-WebUI 前端源码位于 `webui_src/`，使用 React + Vite。生产构建输出到 `webui/`，由 `webui.py` 直接托管，因此普通用户只需要运行 Python 服务。
+前端源码位于 `webui_src/`，生产构建输出到 `webui/`，由 `webui.py` 托管。
 
 ```bash
-# 安装前端依赖
 npm install
 
-# 开发模式：先启动 Python API，再启动 Vite
+# 终端 1：Python API 和静态文件服务
 uv run python webui.py --host 127.0.0.1 --port 8765
+
+# 终端 2：Vite 开发服务
 npm run dev
 
-# 生产构建：输出到 webui/
+# 生产构建
 npm run build
-
-# 生产运行：仍然使用 Python 入口
-uv run python webui.py --host 127.0.0.1 --port 8765
 ```
 
-开发模式下 Vite 会把 `/api/*` 代理到 `http://127.0.0.1:8765`。提交前应运行：
+Vite 会将 `/api/*` 代理到 `http://127.0.0.1:8765`。
+
+## 测试与质量检查
 
 ```bash
+# Python 单元测试
+uv run python -m pytest
+
+# 指定 reporter 测试
+uv run python -m pytest tests/test_reporters.py
+
+# 前端生产构建
 npm run build
-python -m py_compile webui.py core/refiner.py
-env UV_CACHE_DIR=/tmp/uv-cache uv run python -m unittest discover -s tests
+
+# Python 语法检查
+python -m py_compile main.py webui.py core/refiner.py reporters/refinement_html_reporter.py
 ```
 
-## 模型训练
+在受限环境中如果 `uv` 无法写入默认缓存，可以临时指定缓存目录：
 
-### 准备训练数据
+```bash
+env UV_CACHE_DIR=/tmp/uv-cache uv run python -m pytest
+```
+
+## 训练与评测
+
+训练数据目录格式：
 
 ```text
 data/train/
-├── ai/          # AI 生成的文本，每篇一个 .txt 文件
+├── ai/
 │   ├── 0001.txt
 │   └── ...
-└── human/       # 人工编写的文本，每篇一个 .txt 文件
+└── human/
     ├── 0001.txt
     └── ...
 ```
 
-### 生成 AI 训练数据
+生成 AI 样本：
 
 ```bash
-# 生成 200 条 AI 样本
 uv run python scripts/generate_sample_data.py --count 200
-
-# 指定主题和输出目录
 uv run python scripts/generate_sample_data.py --count 100 --topics "科技,教育,历史" --output-dir data/train
 ```
 
-人工文本需手动收集，建议来源：个人博客、新闻稿件、学生作文、学术论文等。
-
-### 训练 FengCi0 随机森林
+训练 FengCi0：
 
 ```bash
-uv run python train.py --engine fengci --data-dir data/train/
+uv run python train.py --engine fengci --data-dir data/train
 ```
 
-训练流程：加载文本 → 12 维特征提取 → 数据增强 → 训练 RF/LogReg/GB 三个候选 → 自动选最佳 → 阈值校准 → 保存模型。
-
-输出：
-- `models/fengci/aigc_detector_model.joblib` — 模型文件
-- `models/fengci/aigc_detector_model.metadata.json` — 训练元数据与指标
-
-### 训练 HC3 CNN
+训练 HC3：
 
 ```bash
-uv run python train.py --engine hc3 --data-dir data/train/ --epochs 30
+uv run python train.py --engine hc3 --data-dir data/train --epochs 30
 ```
 
-训练流程：加载文本 → m3e-base 编码 → 训练 OptimizedCNN → 早停 → 保存权重。
-
-输出：
-- `models/hc3/OptimizedCNN_aigc_detector.pth` — 模型权重
-
-### 训练参数
+常用训练参数：
 
 ```bash
-# 使用已有评测集作为验证集
-uv run python train.py --engine fengci --data-dir data/train/ --eval-data examples/eval_sample.jsonl
-
-# 禁用数据增强
-uv run python train.py --engine fengci --data-dir data/train/ --no-augment
-
-# HC3 自定义参数
-uv run python train.py --engine hc3 --data-dir data/train/ --epochs 50 --batch-size 64 --lr 0.0005 --patience 8
-```
-
-## 引擎说明
-
-| 引擎 | 速度 | 本地模型 | API | 原理 |
-| ---- | ---- | :------: | :--: | ---- |
-| FengCi0 | 毫秒 | 1MB 自带 | - | 12 维文本特征 + 随机森林 |
-| HC3+m3e | 秒级 | 25MB 自带 | - | m3e 语义编码 + CNN 分类 |
-| OpenAI 兼容 API | ~0.5s/段 | - | 需要 | LLM logprobs 困惑度 |
-| Binoculars | ~0.5s/段 | - | 需要 | 双视角 ppl/x_ppl 比值（ICLR 2024） |
-| Local Logprob | 取决于模型 | 用户配置 | - | 本地 LM LogRank / perplexity |
-| LastDe | ~0.5s/段 | - | 需要 | 多尺度分布熵（ICLR 2025） |
-
-默认融合权重：FengCi0 30% + HC3 20% + OpenAI API 25% + Binoculars 25%；Local Logprob 和 LastDe 默认 0，可在配置中开启。
-
-## 输出示例
-
-`detect` 默认生成三类报告：
-
-- `AIGC检测报告_*.txt` — 快速查看整体结果
-- `AIGC检测结果_*.json` — 脚本处理和后续对比
-- `AIGC可视化报告_*.html` — 浏览器查看，红色下划线标出高风险段落
-
-```text
-============================================================
-              AIGC 查重检测报告
-============================================================
-检测引擎:   ensemble
-  FengCi0       : ✓ (权重 37%)
-  HC3+m3e       : ✓ (权重 33%)
-  OpenAI 兼容 API: ✗ (权重 0%)
-  Binoculars    : ✗ (权重 0%)
-  Local Logprob : ✗ (权重 0%)
-  LastDe        : ✗ (权重 0%)
-------------------------------------------------------------
-总段落数:     454
-判定为人工撰写: 444 (97.8%)
-判定为AI生成:    10 ( 2.2%)
-平均AIGC分数:   24.7%
-============================================================
+uv run python train.py --engine fengci --data-dir data/train --eval-data examples/eval_sample.jsonl
+uv run python train.py --engine fengci --data-dir data/train --no-augment
+uv run python train.py --engine hc3 --data-dir data/train --epochs 50 --batch-size 64 --lr 0.0005 --patience 8
 ```
 
 ## Python API
@@ -358,20 +305,17 @@ from core.engine import DetectionEngine
 
 engine = DetectionEngine(mode="ensemble")
 
-# 单段检测
-result = engine.detect_single("待检测的文本...")
+result = engine.detect_single("待检测文本")
 print(result["aigc_score"], result["label"])
 
-# 批量检测
-results = engine.detect_batch(["文本1", "文本2", "文本3"])
-for r in results:
-    print(r["aigc_score"], r["label"])
+results = engine.detect_batch(["文本1", "文本2"])
 ```
 
-### 降 AIGC 率
+### 润色
 
 ```python
 from core.refiner import RefinementEngine, generate_refinement_report, export_refined_docx
+from reporters.refinement_html_reporter import generate_refinement_html_report
 
 refiner = RefinementEngine(
     api_base="https://api.deepseek.com/v1",
@@ -381,13 +325,8 @@ refiner = RefinementEngine(
     concurrency=8,
 )
 
-# 单段润色
 refined, note = refiner.refine_paragraph("综上所述，...", strategy="deai_cn")
 
-# 批量润色
-ref_results = refiner.refine_batch(paragraphs, detection_results, score_threshold=0.4)
-
-# 循环润色：每段润色后立即复测，未达标继续调整
 ref_results = await refiner.refine_batch_iterative_async(
     paragraphs,
     detection_results,
@@ -397,88 +336,62 @@ ref_results = await refiner.refine_batch_iterative_async(
     detect_concurrency=4,
 )
 
-# 生成报告
 generate_refinement_report(ref_results, "报告.txt")
+generate_refinement_html_report(ref_results, "报告.html")
 export_refined_docx(paragraphs, ref_results, "润色后.docx")
+```
+
+## 项目结构
+
+```text
+aigc-detector-toolkit/
+├── main.py                         # CLI 入口
+├── webui.py                        # WebUI API 和静态文件服务
+├── train.py                        # 模型训练入口
+├── configs/default.yaml            # 默认配置
+├── core/                           # 检测、润色、训练、评测核心逻辑
+├── extractors/                     # docx/md/txt 段落提取
+├── reporters/                      # TXT/JSON/HTML 报告生成器
+├── webui_src/                      # React + Vite 前端源码
+├── webui/                          # 前端生产构建产物
+├── models/                         # 自带或训练得到的模型文件
+├── scripts/                        # 数据生成脚本
+├── tests/                          # 单元测试
+└── skills/aigc-detect/             # Agent Skill 定义
 ```
 
 ## 结果解读
 
 | AIGC 分数 | 含义 | 建议 |
 | --------- | ---- | ---- |
-| 0-20% | 极低 AI 概率，人工风格明确 | 无需处理 |
-| 20-40% | 低 AI 概率，偏人工 | 可选择性润色 |
-| 40-50% | 接近阈值 | 建议润色 |
-| 50-70% | 偏高 AI 概率 | 强烈建议润色 |
-| 70-100% | 高 AI 概率 | 必须润色 |
+| 0-20% | 极低风险 | 通常无需处理 |
+| 20-40% | 低风险 | 可抽查 |
+| 40-50% | 接近阈值 | 建议复核或轻度润色 |
+| 50-70% | 偏高风险 | 建议重点润色 |
+| 70-100% | 高风险 | 建议重写或多轮润色 |
 
-## 项目结构
+检测结果是辅助审阅信号，不应作为唯一判断依据。建议结合文本来源、写作过程、引用和上下文进行人工复核。
 
-```text
-aigc-detector-toolkit/
-├── main.py                          # CLI 主入口（detect/batch/refine/eval/status/test）
-├── train.py                         # 模型训练入口
-├── pyproject.toml                   # uv 项目配置，含可选依赖组
-├── package.json                     # React/Vite WebUI 前端依赖与构建脚本
-├── vite.config.js                   # WebUI 构建配置，输出到 webui/
-├── requirements.txt
-├── configs/
-│   └── default.yaml                 # 默认配置（引擎权重、API、阈值）
-├── core/
-│   ├── engine.py                    # 多引擎融合检测器
-│   ├── refiner.py                   # 降 AIGC 率润色引擎（三策略 prompt）
-│   ├── trainer.py                   # 模型训练（FengCiTrainer / HC3Trainer）
-│   ├── evaluation.py                # 评测指标、阈值扫描
-│   ├── fengci_adapter.py            # FengCi0 特征提取 + RF 推理（自包含）
-│   ├── hc3_adapter.py               # HC3 m3e + CNN 推理（自包含）
-│   ├── openai_adapter.py            # OpenAI 兼容 API logprobs
-│   ├── binoculars_adapter.py        # Binoculars 双视角检测
-│   ├── local_logprob_adapter.py     # 可选本地 LM LogRank
-│   ├── lastde_adapter.py            # LastDe 多尺度分布熵检测
-│   └── progress.py                  # 进度条工具
-├── extractors/                      # 文档段落提取（docx/md/txt）
-├── reporters/                       # 输出报告（终端/txt/json/html）
-├── webui.py                         # WebUI 后端 API + 静态文件托管
-├── webui/                           # React 构建产物（python webui.py 托管）
-├── webui_src/                       # React + Vite 前端源码
-├── models/
-│   ├── fengci/
-│   │   ├── aigc_detector_model.joblib
-│   │   └── aigc_detector_model.metadata.json
-│   └── hc3/
-│       └── OptimizedCNN_aigc_detector.pth
-├── scripts/
-│   └── generate_sample_data.py      # LLM API 生成训练数据
-├── examples/
-│   └── eval_sample.jsonl            # 评测样本
-├── skills/
-│   └── aigc-detect/
-│       ├── SKILL.md                 # AI Agent Skill 定义
-│       └── INSTALL.md               # Skill 安装说明
-└── output/                          # 检测输出（git 忽略）
-```
+## Agent Skill
 
-## Claude Code / Agent Skill
-
-项目内置 `aigc-detect` Skill，支持 Claude Code、Cursor、Hermes、Codex 等 AI Agent 框架。
+项目内置 `aigc-detect` Skill，可用于 Claude Code、Cursor、Codex 等 Agent 工作流。
 
 ```bash
-# Claude Code 项目级安装
 mkdir -p .claude/skills/aigc-detect
 cp skills/aigc-detect/SKILL.md .claude/skills/aigc-detect/
 ```
 
-自然语言触发：
+示例自然语言指令：
 
 ```text
-"帮我检测这篇论文是否有 AI 生成内容"
-"降低这篇论文的 AIGC 率"
-"训练一个新的 FengCi0 模型"
-"生成 200 条 AI 训练数据"
+帮我检测这篇论文是否有 AI 生成内容
+降低这篇论文的 AIGC 率
+训练一个新的 FengCi0 模型
+生成 200 条 AI 训练数据
 ```
 
 详见 [skills/aigc-detect/INSTALL.md](skills/aigc-detect/INSTALL.md)。
 
-## 许可证
+## License
 
 MIT License

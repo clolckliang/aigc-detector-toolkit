@@ -614,7 +614,7 @@ textarea:focus {
 .row-summary {
   width: 100%;
   display: grid;
-  grid-template-columns: 54px 82px 70px minmax(0, 1fr) 24px;
+  grid-template-columns: 54px 138px 70px minmax(0, 1fr) 24px;
   gap: 10px;
   align-items: center;
   min-height: 58px;
@@ -644,6 +644,33 @@ textarea:focus {
 .score-pill {
   color: var(--blue);
   background: #eef4ff;
+}
+
+.score-compare-pill {
+  display: inline-grid;
+  grid-template-columns: minmax(0, 1fr) 14px minmax(0, 1fr);
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: var(--blue);
+  background: #eef4ff;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.score-compare-pill b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font: inherit;
+}
+
+.score-compare-pill i {
+  color: var(--muted);
+  font-style: normal;
+  text-align: center;
 }
 
 .label.ai {
@@ -701,6 +728,48 @@ textarea:focus {
 .drawer-section h3 {
   margin: 0 0 8px;
   font-size: 13px;
+}
+
+.score-compare-block {
+  grid-column: 1 / -1;
+  background: #fff;
+}
+
+.score-compare-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.score-stat {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.score-stat span {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.score-stat strong {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 17px;
+}
+
+.score-stat.improved strong {
+  color: var(--accent);
+}
+
+.score-stat.worse strong {
+  color: var(--danger);
 }
 
 .contribution-list {

@@ -708,7 +708,7 @@ function ResultRow({ row, expanded, editValue, onToggle, onEditChange, onSaveEdi
     <article className={`result-row ${expanded ? "expanded" : ""}`}>
       <button className="row-summary" type="button" onClick={onToggle}>
         <span className="row-index">#{row.index}</span>
-        <span className="score-pill">{formatPercent(score)}</span>
+        <RowScore row={row} />
         <span className={`label ${row.label || "unknown"}`}>{labelText(row.label)}</span>
         <span className="row-text">{row.text || ""}</span>
         <ChevronDown className="chevron" size={18} />
@@ -716,6 +716,7 @@ function ResultRow({ row, expanded, editValue, onToggle, onEditChange, onSaveEdi
       {expanded && (
         <div className="row-detail">
           <div className="detail-main">
+            {hasScoreComparison(row) && <ScoreComparison row={row} />}
             <div className="explain-block">
               <h3>引擎贡献</h3>
               <EngineContributions scores={row.engine_scores || []} finalScore={score} />
@@ -753,6 +754,45 @@ function ResultRow({ row, expanded, editValue, onToggle, onEditChange, onSaveEdi
         </div>
       )}
     </article>
+  );
+}
+
+function RowScore({ row }) {
+  if (!hasScoreComparison(row)) {
+    return <span className="score-pill">{formatPercent(scoreValue(row))}</span>;
+  }
+  return (
+    <span className="score-compare-pill">
+      <b>{formatPercent(beforeScore(row))}</b>
+      <i>→</i>
+      <b>{formatPercent(afterScore(row))}</b>
+    </span>
+  );
+}
+
+function ScoreComparison({ row }) {
+  const before = beforeScore(row);
+  const after = afterScore(row);
+  const delta = scoreDelta(row);
+  const tone = delta === null ? "neutral" : delta < 0 ? "improved" : delta > 0 ? "worse" : "neutral";
+  return (
+    <div className="explain-block score-compare-block">
+      <h3>分数对比</h3>
+      <div className="score-compare-grid">
+        <ScoreStat label="润色前" value={formatPercent(before)} />
+        <ScoreStat label="润色后" value={formatPercent(after)} />
+        <ScoreStat label="变化" value={formatScoreDelta(delta)} tone={tone} />
+      </div>
+    </div>
+  );
+}
+
+function ScoreStat({ label, value, tone = "" }) {
+  return (
+    <div className={`score-stat ${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
   );
 }
 
@@ -936,6 +976,26 @@ function scoreValue(row) {
   return typeof row?.aigc_score === "number" ? row.aigc_score : 0;
 }
 
+function beforeScore(row) {
+  return typeof row?.aigc_before === "number" ? row.aigc_before : null;
+}
+
+function afterScore(row) {
+  if (typeof row?.aigc_after === "number") return row.aigc_after;
+  return typeof row?.aigc_score === "number" ? row.aigc_score : null;
+}
+
+function scoreDelta(row) {
+  const before = beforeScore(row);
+  const after = afterScore(row);
+  if (typeof before !== "number" || typeof after !== "number") return null;
+  return after - before;
+}
+
+function hasScoreComparison(row) {
+  return typeof row?.aigc_before === "number" || typeof row?.aigc_after === "number";
+}
+
 function isHighRisk(row) {
   return scoreValue(row) >= 0.7 || row.label === "ai";
 }
@@ -1039,6 +1099,13 @@ function formatPercent(value) {
   return `${(Number(value) * 100).toFixed(1)}%`;
 }
 
+function formatScoreDelta(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
+  if (value === 0) return "无变化";
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${(Number(value) * 100).toFixed(1)}%`;
+}
+
 function formatRatio(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "0%";
   return `${Number(value).toFixed(1)}%`;
@@ -1077,13 +1144,17 @@ function downloadJson(data) {
 }
 
 function downloadCsv(rows) {
-  const headers = ["index", "score", "label", "engine_scores", "refined", "text"];
+  const headers = ["index", "score", "score_before", "score_after", "score_delta", "label", "engine_scores", "refined", "text"];
   const lines = [headers.join(",")];
   for (const row of rows) {
     const engineScores = (row.engine_scores || []).map((item) => `${item.label}:${item.score_text || "-"}`).join(";");
+    const delta = scoreDelta(row);
     const values = [
       row.index ?? "",
       row.aigc_score ?? "",
+      beforeScore(row) ?? "",
+      afterScore(row) ?? "",
+      delta ?? "",
       row.label ?? "",
       engineScores,
       row.refined ?? "",

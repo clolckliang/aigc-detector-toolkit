@@ -33,6 +33,7 @@ from reporters.console_reporter import print_summary, print_detail
 from reporters.text_reporter import generate_text_report
 from reporters.json_reporter import generate_json_report
 from reporters.html_reporter import generate_html_report
+from reporters.refinement_html_reporter import generate_refinement_html_report
 from core.evaluation import (
     load_labeled_dataset,
     summarize_engine_metrics,
@@ -576,15 +577,25 @@ def cmd_refine(args, config):
     aigc_after_summary = {"ai_ratio": ai_ratio_after} if ai_ratio_after is not None else None
 
     report_path = os.path.join(output_dir, f"降AIGC报告_{basename}_{timestamp}.txt")
+    html_path = os.path.join(output_dir, f"降AIGC可视化报告_{basename}_{timestamp}.html")
     docx_path = os.path.join(output_dir, f"润色后文本_{basename}_{timestamp}.docx")
     json_path = os.path.join(output_dir, f"润色结果_{basename}_{timestamp}.json")
     with ProgressManager(enabled=True) as progress:
-        output_task = progress.add_task("导出结果", total=3, unit="项")
+        output_task = progress.add_task("导出结果", total=4, unit="项")
         generate_refinement_report(
             refinement_results, report_path,
             aigc_before=aigc_before_summary, aigc_after=aigc_after_summary,
         )
         progress.advance(output_task, 1, status="报告")
+
+        generate_refinement_html_report(
+            refinement_results,
+            html_path,
+            source_file=fp,
+            aigc_before=aigc_before_summary,
+            aigc_after=aigc_after_summary,
+        )
+        progress.advance(output_task, 1, status="HTML")
 
         export_refined_docx(paragraphs, refinement_results, docx_path)
         progress.advance(output_task, 1, status="DOCX")
@@ -606,6 +617,7 @@ def cmd_refine(args, config):
         progress.advance(output_task, 1, status="JSON")
 
     print(f"\n  📝 润色报告: {report_path}")
+    print(f"  🌐 HTML报告: {html_path}")
     print(f"  📄 润色后DOCX: {docx_path}")
     print(f"  📊 JSON: {json_path}")
 
