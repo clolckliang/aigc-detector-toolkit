@@ -111,7 +111,7 @@ function renderRows() {
   });
 
   if (!rows.length) {
-    resultRows.innerHTML = '<tr class="empty-row"><td colspan="7">没有匹配结果</td></tr>';
+    resultRows.innerHTML = '<tr class="empty-row"><td colspan="6">没有匹配结果</td></tr>';
     return;
   }
 
@@ -120,7 +120,6 @@ function renderRows() {
       <td>${row.index ?? ""}</td>
       <td class="score">${formatPercent(row.aigc_score)}</td>
       <td><span class="label ${row.label || "unknown"}">${labelText(row.label)}</span></td>
-      <td>${row.method || "-"}</td>
       <td class="engine-cell">${renderEngineScores(row.engine_scores || [])}</td>
       <td class="refine-cell">${renderRefineInfo(row)}</td>
       <td class="paragraph-cell">${renderParagraph(row)}</td>
@@ -229,7 +228,7 @@ async function submitJob(url, options) {
     setStatus("失败", "error");
     runStage.textContent = "失败";
     runMessage.textContent = error.message;
-    resultRows.innerHTML = `<tr class="empty-row"><td colspan="7">${escapeHtml(error.message)}</td></tr>`;
+    resultRows.innerHTML = `<tr class="empty-row"><td colspan="6">${escapeHtml(error.message)}</td></tr>`;
     toggleButtons(false);
     state.currentJobId = null;
     cancelJobBtn.disabled = true;
@@ -358,7 +357,7 @@ function exportJson() {
 
 function exportCsv() {
   if (!state.rows.length) return;
-  const headers = ["index", "score", "label", "method", "engine_scores", "refined", "text"];
+  const headers = ["index", "score", "label", "engine_scores", "refined", "text"];
   const lines = [headers.join(",")];
   for (const row of state.rows) {
     const engineScores = (row.engine_scores || []).map((item) => `${item.label}:${item.score_text || "-"}`).join(";");
@@ -366,7 +365,6 @@ function exportCsv() {
       row.index ?? "",
       row.aigc_score ?? "",
       row.label ?? "",
-      row.method ?? "",
       engineScores,
       row.refined ?? "",
       row.text ?? "",
