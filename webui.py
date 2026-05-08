@@ -568,6 +568,9 @@ class WebUIHandler(BaseHTTPRequestHandler):
         if WEB_ROOT.resolve() not in target.parents and target != WEB_ROOT.resolve():
             self.send_error(403)
             return
+        if not target.exists() and not route.startswith("/assets/"):
+            self._send_file(WEB_ROOT / "index.html")
+            return
         self._send_file(target)
 
     def do_POST(self):
