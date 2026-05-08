@@ -12,8 +12,9 @@ import re
 import json
 import logging
 import time
+import asyncio
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,26 @@ Input:
 {paragraph}"""
 
 
+PROMPTS = {
+    'refine_cn': PROMPT_REFINE_CN,
+    'deai_cn': PROMPT_DEAI_CN,
+    'deai_en': PROMPT_DEAI_EN,
+    'logic_check_en': PROMPT_LOGIC_CHECK_EN,
+}
+
+
+PROMPT_ITERATIVE_HINT_CN = """上一轮润色后的 AIGC 分数仍然偏高（{score:.1f}%），请在不改变技术含义、数据、术语、公式和引用的前提下，进一步降低模板化表达。
+
+要求：
+1. 避免机械连接词和套话。
+2. 保留原有信息密度，不要扩写空话。
+3. 句式可以更自然，但不得引入新事实。
+4. 直接输出改写后的纯文本，不要解释。
+
+待调整文本：
+{paragraph}"""
+
+
 # ═══════════════════════════════════════════════════════════
 # 段落分类器
 # ═══════════════════════════════════════════════════════════
@@ -152,47 +173,52 @@ class RefinementEngine:
         model: str = "gpt-4o-mini",
         temperature: float = 0.3,
         max_retries: int = 3,
+        concurrency: int = 10,
     ):
         self.api_base = api_base.rstrip('/')
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self.model = model
         self.temperature = temperature
         self.max_retries = max_retries
+        self.concurrency = concurrency
+
+    def _get_client(self):
+        from openai import OpenAI
+        return OpenAI(api_key=self.api_key, base_url=self.api_base, timeout=120, max_retries=self.max_retries)
+
+    def _get_async_client(self):
+        from openai import AsyncOpenAI
+        return AsyncOpenAI(api_key=self.api_key, base_url=self.api_base, timeout=120, max_retries=self.max_retries)
+
+    @staticmethod
+    def _parse_refinement_result(text: str, strategy: str) -> Tuple[str, str]:
+        if strategy == 'logic_check_en':
+            return text, "逻辑检查不修改原文"
+        if strategy == 'refine_cn':
+            lines = text.split('\n', 1)
+            refined = lines[0].strip()
+            note = lines[1].strip() if len(lines) > 1 else "已润色"
+            if refined.startswith('"') and refined.endswith('"'):
+                refined = refined[1:-1]
+            if refined.startswith('"') and refined.endswith('"'):
+                refined = refined[1:-1]
+            return refined, note
+        return text.strip(), "已重写（去 AI 化）"
 
     def _call_llm(self, prompt: str) -> Optional[str]:
         """调用 LLM API"""
-        import httpx
-
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-
-        for attempt in range(self.max_retries):
-            try:
-                resp = httpx.post(
-                    f"{self.api_base}/chat/completions",
-                    json={
-                        "model": self.model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "temperature": self.temperature,
-                        "max_tokens": 2000,
-                    },
-                    headers=headers,
-                    timeout=120,
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    return data["choices"][0]["message"]["content"].strip()
-                else:
-                    logger.warning("API 调用失败 (attempt %d): %d %s",
-                                   attempt + 1, resp.status_code, resp.text[:200])
-            except Exception as e:
-                logger.warning("API 调用异常 (attempt %d): %s", attempt + 1, e)
-
-            if attempt < self.max_retries - 1:
-                time.sleep(2 ** attempt)
-
-        return None
+        try:
+            client = self._get_client()
+            resp = client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=self.temperature,
+                max_tokens=2000,
+            )
+            return resp.choices[0].message.content.strip()
+        except Exception as e:
+            logger.warning("API 调用失败: %s", e)
+            return None
 
     def refine_paragraph(self, text: str, strategy: str) -> Tuple[str, str]:
         """
@@ -225,20 +251,353 @@ class RefinementEngine:
         if strategy == 'logic_check_en':
             return text, result  # 逻辑检查不改原文，只输出检查结果
 
-        if strategy == 'refine_cn':
-            # 解析：第一行是润色文本，后续是修改说明
-            lines = result.split('\n', 1)
-            refined = lines[0].strip()
-            note = lines[1].strip() if len(lines) > 1 else "已润色"
-            # 去掉可能的引号包裹
-            if refined.startswith('"') and refined.endswith('"'):
-                refined = refined[1:-1]
-            if refined.startswith('"') and refined.endswith('"'):
-                refined = refined[1:-1]
-            return refined, note
+        return self._parse_refinement_result(result, strategy)
 
-        # deai_cn / deai_en: 直接返回重写结果
-        return result, "已重写（去 AI 化）"
+    async def _call_llm_async(self, prompt: str, client) -> Optional[str]:
+        """异步调用 LLM API"""
+        resp = await client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=self.temperature,
+            max_tokens=2000,
+        )
+        return resp.choices[0].message.content.strip()
+
+    async def _refine_one_async(self, para: Dict, score_info: Dict,
+                                score_threshold: float, semaphore: asyncio.Semaphore,
+                                client) -> Dict:
+        """异步润色单个段落（带并发控制）"""
+        text = para['text']
+        aigc_score = score_info.get('aigc_score')
+
+        # 低于阈值跳过
+        if aigc_score is not None and aigc_score <= score_threshold:
+            return {
+                'index': para['index'],
+                'chapter': para.get('chapter', 0),
+                'original': text,
+                'refined': text,
+                'strategy': 'skip',
+                'changed': False,
+                'note': f'AIGC={aigc_score*100:.1f}%，低于阈值，跳过',
+                'aigc_before': aigc_score,
+                'aigc_after': None,
+            }
+
+        strategy = classify_paragraph(text)
+
+        if strategy == 'skip':
+            return {
+                'index': para['index'],
+                'chapter': para.get('chapter', 0),
+                'original': text,
+                'refined': text,
+                'strategy': 'skip',
+                'changed': False,
+                'note': '跳过（代码/公式/过短）',
+                'aigc_before': aigc_score,
+                'aigc_after': None,
+            }
+
+        try:
+            async with semaphore:
+                result = await self._call_llm_async(
+                    PROMPTS[strategy].format(paragraph=text), client
+                )
+        except Exception as e:
+            logger.warning("段落 %d API 调用失败: %s", para['index'], e)
+            result = None
+
+        if not result:
+            return {
+                'index': para['index'],
+                'chapter': para.get('chapter', 0),
+                'original': text,
+                'refined': text,
+                'strategy': strategy,
+                'changed': False,
+                'note': 'API 调用失败，保留原文',
+                'aigc_before': aigc_score,
+                'aigc_after': None,
+            }
+
+        if strategy == 'logic_check_en':
+            refined, note = text, result
+        else:
+            refined, note = self._parse_refinement_result(result, strategy)
+
+        changed = (refined.strip() != text.strip())
+        return {
+            'index': para['index'],
+            'chapter': para.get('chapter', 0),
+            'original': text,
+            'refined': refined,
+            'strategy': strategy,
+            'changed': changed,
+            'note': note,
+            'aigc_before': aigc_score,
+            'aigc_after': None,
+        }
+
+    async def _detect_async(
+        self,
+        text: str,
+        detect_fn: Callable[[str], Dict],
+        semaphore: asyncio.Semaphore,
+    ) -> Dict:
+        async with semaphore:
+            return await asyncio.to_thread(detect_fn, text)
+
+    async def _refine_one_iterative_async(
+        self,
+        para: Dict,
+        score_info: Dict,
+        score_threshold: float,
+        max_rounds: int,
+        refine_semaphore: asyncio.Semaphore,
+        detect_semaphore: asyncio.Semaphore,
+        client,
+        detect_fn: Callable[[str], Dict],
+    ) -> Dict:
+        """单段循环润色：润色一次就复测一次，达标或到达轮数上限即停止。"""
+        text = para['text']
+        aigc_score = score_info.get('aigc_score')
+
+        if aigc_score is not None and aigc_score <= score_threshold:
+            return {
+                'index': para['index'],
+                'chapter': para.get('chapter', 0),
+                'original': text,
+                'refined': text,
+                'strategy': 'skip',
+                'changed': False,
+                'note': f'AIGC={aigc_score*100:.1f}%，低于阈值，跳过',
+                'aigc_before': aigc_score,
+                'aigc_after': aigc_score,
+                'aigc_after_label': score_info.get('label'),
+                'rounds': 0,
+                'round_history': [],
+            }
+
+        strategy = classify_paragraph(text)
+        if strategy == 'skip':
+            return {
+                'index': para['index'],
+                'chapter': para.get('chapter', 0),
+                'original': text,
+                'refined': text,
+                'strategy': 'skip',
+                'changed': False,
+                'note': '跳过（代码/公式/过短）',
+                'aigc_before': aigc_score,
+                'aigc_after': aigc_score,
+                'aigc_after_label': score_info.get('label'),
+                'rounds': 0,
+                'round_history': [],
+            }
+
+        current_text = text
+        current_score = aigc_score
+        best_text = text
+        best_score = aigc_score
+        best_label = score_info.get('label')
+        best_note = ""
+        history = []
+
+        for round_no in range(1, max_rounds + 1):
+            if round_no == 1:
+                prompt = PROMPTS[strategy].format(paragraph=current_text)
+            else:
+                score_value = current_score if current_score is not None else (score_threshold + 0.01)
+                prompt = PROMPT_ITERATIVE_HINT_CN.format(
+                    score=score_value * 100,
+                    paragraph=current_text,
+                )
+
+            try:
+                async with refine_semaphore:
+                    result = await self._call_llm_async(prompt, client)
+            except Exception as e:
+                logger.warning("段落 %d 第 %d 轮润色失败: %s", para['index'], round_no, e)
+                history.append({
+                    'round': round_no,
+                    'aigc_score': current_score,
+                    'changed': False,
+                    'note': f'API 调用失败: {e}',
+                })
+                break
+
+            if not result:
+                history.append({
+                    'round': round_no,
+                    'aigc_score': current_score,
+                    'changed': False,
+                    'note': 'API 调用失败，保留上一版',
+                })
+                break
+
+            refined, note = self._parse_refinement_result(result, strategy if round_no == 1 else 'deai_cn')
+            if not refined:
+                history.append({
+                    'round': round_no,
+                    'aigc_score': current_score,
+                    'changed': False,
+                    'note': '模型返回空文本，保留上一版',
+                })
+                break
+
+            detect_result = await self._detect_async(refined, detect_fn, detect_semaphore)
+            next_score = detect_result.get('aigc_score')
+            changed = refined.strip() != current_text.strip()
+            history.append({
+                'round': round_no,
+                'aigc_score': next_score,
+                'label': detect_result.get('label'),
+                'changed': changed,
+                'note': note,
+            })
+
+            if next_score is not None and (best_score is None or next_score < best_score):
+                best_text = refined
+                best_score = next_score
+                best_label = detect_result.get('label')
+                best_note = note
+
+            current_text = refined
+            current_score = next_score
+
+            if next_score is not None and next_score <= score_threshold:
+                break
+
+        changed = best_text.strip() != text.strip()
+        if history:
+            final_note = f"循环润色 {len(history)} 轮"
+            if best_score is not None:
+                final_note += f"，最佳 AIGC={best_score*100:.1f}%"
+            if best_note:
+                final_note += f"；{best_note}"
+        else:
+            final_note = "未执行润色"
+
+        return {
+            'index': para['index'],
+            'chapter': para.get('chapter', 0),
+            'original': text,
+            'refined': best_text,
+            'strategy': strategy,
+            'changed': changed,
+            'note': final_note,
+            'aigc_before': aigc_score,
+            'aigc_after': best_score,
+            'aigc_after_label': best_label,
+            'rounds': len(history),
+            'round_history': history,
+        }
+
+    async def refine_batch_iterative_async(
+        self,
+        paragraphs: List[Dict],
+        aigc_scores: List[Dict],
+        detect_fn: Callable[[str], Dict],
+        score_threshold: float = 0.4,
+        max_rounds: int = 2,
+        detect_concurrency: Optional[int] = None,
+    ) -> List[Dict]:
+        """并发执行“单段润色 -> 单段检测 -> 循环调整”的降重工作流。"""
+        client = self._get_async_client()
+        refine_semaphore = asyncio.Semaphore(self.concurrency)
+        detect_semaphore = asyncio.Semaphore(detect_concurrency or self.concurrency)
+        start_time = time.time()
+
+        tasks = [
+            self._refine_one_iterative_async(
+                para,
+                score_info,
+                score_threshold,
+                max(1, max_rounds),
+                refine_semaphore,
+                detect_semaphore,
+                client,
+                detect_fn,
+            )
+            for para, score_info in zip(paragraphs, aigc_scores)
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        await client.close()
+
+        final_results = []
+        for i, r in enumerate(results):
+            if isinstance(r, Exception):
+                logger.error("段落 %d 循环润色异常: %s", i, r)
+                final_results.append({
+                    'index': paragraphs[i]['index'],
+                    'chapter': paragraphs[i].get('chapter', 0),
+                    'original': paragraphs[i]['text'],
+                    'refined': paragraphs[i]['text'],
+                    'strategy': 'error',
+                    'changed': False,
+                    'note': f'异常: {r}',
+                    'aigc_before': aigc_scores[i].get('aigc_score'),
+                    'aigc_after': aigc_scores[i].get('aigc_score'),
+                    'aigc_after_label': aigc_scores[i].get('label'),
+                    'rounds': 0,
+                    'round_history': [],
+                })
+            else:
+                final_results.append(r)
+
+        elapsed = time.time() - start_time
+        changed_count = sum(1 for r in final_results if r['changed'])
+        rounds = sum(r.get('rounds', 0) for r in final_results)
+        logger.info("循环润色完成: %d 段中修改 %d 段，总轮次 %d，耗时 %.1f 秒 (润色并发=%d, 检测并发=%d)",
+                    len(final_results), changed_count, rounds, elapsed,
+                    self.concurrency, detect_concurrency or self.concurrency)
+        return final_results
+
+    async def refine_batch_async(
+        self,
+        paragraphs: List[Dict],
+        aigc_scores: List[Dict],
+        score_threshold: float = 0.4,
+    ) -> List[Dict]:
+        """并发批量润色高风险段落"""
+        client = self._get_async_client()
+        semaphore = asyncio.Semaphore(self.concurrency)
+        start_time = time.time()
+
+        tasks = [
+            self._refine_one_async(para, score_info, score_threshold, semaphore, client)
+            for para, score_info in zip(paragraphs, aigc_scores)
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        await client.close()
+
+        # 处理异常结果
+        final_results = []
+        for i, r in enumerate(results):
+            if isinstance(r, Exception):
+                logger.error("段落 %d 润色异常: %s", i, r)
+                final_results.append({
+                    'index': paragraphs[i]['index'],
+                    'chapter': paragraphs[i].get('chapter', 0),
+                    'original': paragraphs[i]['text'],
+                    'refined': paragraphs[i]['text'],
+                    'strategy': 'error',
+                    'changed': False,
+                    'note': f'异常: {r}',
+                    'aigc_before': aigc_scores[i].get('aigc_score'),
+                    'aigc_after': None,
+                })
+            else:
+                final_results.append(r)
+
+        elapsed = time.time() - start_time
+        changed_count = sum(1 for r in final_results if r['changed'])
+        skipped_count = sum(1 for r in final_results if not r['changed'] and r['strategy'] == 'skip')
+        logger.info("并发润色完成: %d 段中修改 %d 段，跳过 %d 段，耗时 %.1f 秒 (并发数=%d)",
+                     len(final_results), changed_count, skipped_count, elapsed, self.concurrency)
+        return final_results
 
     def refine_batch(
         self,
@@ -405,6 +764,15 @@ def generate_refinement_report(
             else:
                 f.write(f"  原文: {r['original'][:200]}\n")
                 f.write(f"  状态: {r['note']}\n")
+
+            round_history = r.get('round_history') or []
+            if round_history:
+                f.write("  循环记录:")
+                for item in round_history:
+                    score = item.get('aigc_score')
+                    score_text = f"{score*100:.1f}%" if score is not None else "N/A"
+                    f.write(f" 第{item.get('round')}轮={score_text}")
+                f.write("\n")
 
             f.write("\n")
 

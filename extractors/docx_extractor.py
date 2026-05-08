@@ -34,6 +34,7 @@ def extract_from_docx(
     doc = Document(file_path)
     paragraphs = []
     in_body = False
+    has_chapter_marker = False
     current_chapter = 0
     current_section = ""
     para_index = 0
@@ -46,6 +47,7 @@ def extract_from_docx(
         # 检测章标题（如 "第1章 绪论"）
         ch_match = re.match(r'^第(\d+)章\s*(.*)', text)
         if ch_match:
+            has_chapter_marker = True
             ch_num = int(ch_match.group(1))
             # 首次进入正文
             if ch_num == 1 and not in_body:
@@ -67,6 +69,10 @@ def extract_from_docx(
         if text.startswith('参考文献') or text.startswith('致  谢') or text.startswith('致谢'):
             in_body = False
             continue
+
+        # 如果全文没有章节标记（如润色后导出的文档），默认进入正文
+        if not in_body and not has_chapter_marker:
+            in_body = True
 
         if not in_body:
             continue

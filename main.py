@@ -13,6 +13,7 @@ AIGC Detector Toolkit — 中文 AI 生成文本检测工具
 """
 
 import argparse
+import asyncio
 import glob
 import json
 import logging
@@ -61,6 +62,12 @@ DEFAULT_CONFIG = {
         "api_key": os.environ.get("OPENAI_API_KEY", os.environ.get("MIMO_API_KEY", "")),
         "model": os.environ.get("OPENAI_MODEL", os.environ.get("MIMO_MODEL", "gpt-4o-mini")),
         "strategy": "perplexity",
+    },
+    "refiner_api": {
+        "api_base": os.environ.get("REFINER_BASE_URL", os.environ.get("REFINER_API_BASE", "")),
+        "api_key": os.environ.get("REFINER_API_KEY", ""),
+        "model": os.environ.get("REFINER_MODEL", ""),
+        "temperature": float(os.environ.get("REFINER_TEMPERATURE", "0.3")),
     },
     "binoculars": {
         "api_base": "",
@@ -131,6 +138,17 @@ def load_config(config_path=None):
         config["openai_api"]["model"] = os.environ["OPENAI_MODEL"]
     elif os.environ.get("MIMO_MODEL"):
         config["openai_api"]["model"] = os.environ["MIMO_MODEL"]
+
+    if os.environ.get("REFINER_API_KEY"):
+        config.setdefault("refiner_api", {})["api_key"] = os.environ["REFINER_API_KEY"]
+    if os.environ.get("REFINER_BASE_URL") or os.environ.get("REFINER_API_BASE"):
+        config.setdefault("refiner_api", {})["api_base"] = (
+            os.environ.get("REFINER_BASE_URL") or os.environ["REFINER_API_BASE"]
+        )
+    if os.environ.get("REFINER_MODEL"):
+        config.setdefault("refiner_api", {})["model"] = os.environ["REFINER_MODEL"]
+    if os.environ.get("REFINER_TEMPERATURE"):
+        config.setdefault("refiner_api", {})["temperature"] = float(os.environ["REFINER_TEMPERATURE"])
 
     return config
 
@@ -412,37 +430,71 @@ def cmd_refine(args, config):
     # ── Step 3: 润色 ──
     print(f"\n✏️  Step 2: 润色高风险段落 (阈值 > {threshold*100:.0f}%)...")
     openai_cfg = config.get("openai_api", {})
+    refiner_cfg = config.get("refiner_api", {})
+    perf_cfg = config.get("performance", {})
+    refiner_api_base = (
+        getattr(args, "refiner_api_base", None)
+        or refiner_cfg.get("api_base")
+        or openai_cfg.get("api_base", "https://api.openai.com/v1")
+    )
+    refiner_api_key = (
+        getattr(args, "refiner_api_key", None)
+        or refiner_cfg.get("api_key")
+        or openai_cfg.get("api_key", "")
+    )
+    refiner_model = (
+        getattr(args, "refiner_model", None)
+        or refiner_cfg.get("model")
+        or openai_cfg.get("model", "gpt-4o-mini")
+    )
+    refiner_temperature = getattr(args, "refiner_temperature", None)
+    if refiner_temperature is None:
+        refiner_temperature = refiner_cfg.get("temperature", 0.3)
     refiner = RefinementEngine(
-        api_base=openai_cfg.get("api_base", "https://api.openai.com/v1"),
-        api_key=openai_cfg.get("api_key", ""),
-        model=openai_cfg.get("model", "gpt-4o-mini"),
+        api_base=refiner_api_base,
+        api_key=refiner_api_key,
+        model=refiner_model,
+        temperature=float(refiner_temperature),
+        concurrency=perf_cfg.get("api_concurrency", 8),
     )
 
     if not refiner.api_key:
-        print("  ⚠️  未配置 OPENAI_API_KEY，无法调用 LLM 润色。")
-        print("  请设置环境变量: export OPENAI_API_KEY=your-key")
-        print("  或在 configs/default.yaml 中配置 openai_api.api_key")
+        print("  ⚠️  未配置润色模型 API Key，无法调用 LLM 润色。")
+        print("  请设置环境变量: export REFINER_API_KEY=your-key")
+        print("  或在 configs/default.yaml 中配置 refiner_api.api_key")
         return 1
+    print(f"  润色模型: {refiner.model} @ {refiner.api_base}")
 
-    refinement_results = refiner.refine_batch(paragraphs, results, score_threshold=threshold)
+    max_rounds = getattr(args, "max_rounds", 2)
+    detect_concurrency = getattr(args, "detect_concurrency", None) or perf_cfg.get("api_concurrency", 8)
+    if args.no_recheck:
+        refinement_results = asyncio.run(
+            refiner.refine_batch_async(paragraphs, results, score_threshold=threshold)
+        )
+    else:
+        print(f"  循环模式: 每段最多 {max_rounds} 轮，检测并发 {detect_concurrency}")
+        refinement_results = asyncio.run(
+            refiner.refine_batch_iterative_async(
+                paragraphs,
+                results,
+                detect_fn=engine.detect_single,
+                score_threshold=threshold,
+                max_rounds=max_rounds,
+                detect_concurrency=detect_concurrency,
+            )
+        )
 
     changed = [r for r in refinement_results if r["changed"]]
     print(f"  已修改 {len(changed)} 段")
 
     # ── Step 4: 复测 ──
-    if changed and not args.no_recheck:
-        print("\n🔄 Step 3: 复测润色后文本...")
-        refined_texts = [r["refined"] for r in refinement_results]
-        recheck_results = engine.detect_batch(refined_texts, show_progress=True)
-
-        # 更新 after 分数
-        for rr, rc in zip(refinement_results, recheck_results):
-            rr["aigc_after"] = rc.get("aigc_score")
-
-        valid_after = [r for r in recheck_results if r["label"] != "unknown"]
-        ai_after = [r for r in valid_after if r["label"] == "ai"]
+    if not args.no_recheck:
+        valid_after = [
+            r for r in refinement_results
+            if r.get("aigc_after_label") and r.get("aigc_after_label") != "unknown"
+        ]
+        ai_after = [r for r in valid_after if r.get("aigc_after_label") == "ai"]
         ai_ratio_after = len(ai_after) / len(valid_after) * 100 if valid_after else 0
-
         print(f"\n  润色后 AIGC 率: {ai_ratio_after:.1f}% ({len(ai_after)}/{len(valid_after)})")
         print(f"  降幅: {ai_ratio_before - ai_ratio_after:.1f} 个百分点")
     else:
@@ -546,6 +598,12 @@ def main():
     p.add_argument("file", help="待处理文件（.docx / .md / .txt）")
     p.add_argument("--engine", choices=choices, default=None)
     p.add_argument("--threshold", type=float, default=0.4, help="AIGC分数阈值，高于此值的段落将被润色")
+    p.add_argument("--refiner-api-base", default=None, help="润色模型 OpenAI-compatible API Base")
+    p.add_argument("--refiner-api-key", default=None, help="润色模型 API Key；也可用 REFINER_API_KEY")
+    p.add_argument("--refiner-model", default=None, help="润色模型名称；也可用 REFINER_MODEL")
+    p.add_argument("--refiner-temperature", type=float, default=None, help="润色模型 temperature")
+    p.add_argument("--max-rounds", type=int, default=2, help="循环润色最大轮数，每段独立计算")
+    p.add_argument("--detect-concurrency", type=int, default=None, help="循环复测并发数，默认复用 performance.api_concurrency")
     p.add_argument("-o", "--output", default=None)
     p.add_argument("--no-recheck", action="store_true", help="跳过复测步骤")
 

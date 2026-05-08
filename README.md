@@ -1,18 +1,19 @@
 # AIGC Detector Toolkit
 
-中文 AI 生成文本 (AIGC) **检测 + 降重**工具，五引擎融合检测，一键降 AIGC 率。
+中文 AI 生成文本 (AIGC) **检测 + 降重**工具，六引擎融合检测，一键降 AIGC 率。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ## 特性
 
-- **五引擎融合检测**
+- **六引擎融合检测**
   - **FengCi0** — 12 维文本特征 + 随机森林，毫秒级响应，无需 API
   - **HC3+m3e** — m3e-base 语义编码 + CNN 分类器，本地运行
   - **OpenAI 兼容 API** — 利用 LLM 的 logprobs 计算困惑度
   - **Binoculars** — 双视角 perplexity 比值（ICLR 2024 论文方法）
   - **Local Logprob** — 本地 causal LM 的 LogRank / perplexity（默认关闭）
-- **一键降 AIGC 率（refine）** — 检测 → 自动分类 → LLM 润色 → 复测验证
+  - **LastDe** — 多尺度分布熵检测（ICLR 2025）
+- **一键降 AIGC 率（refine）** — 检测 → 自动分类 → LLM 润色 → 单段循环复测
 - **模型训练** — 支持 FengCi0 RF 和 HC3 CNN 重新训练，含数据增强
 - **数据生成** — 通过 LLM API 批量生成 AI 训练数据
 - **多格式支持** — `.docx` / `.md` / `.txt`
@@ -65,16 +66,30 @@ uv run python main.py status
 ### 降 AIGC 率（refine）
 
 ```bash
-# 设置 LLM API（用于文本润色）
+# 检测模型 API（用于 OpenAI/Binoculars/LastDe 等检测引擎）
 export OPENAI_API_KEY="your-key-here"
 export OPENAI_BASE_URL="https://api.openai.com/v1"   # 可选
 export OPENAI_MODEL="gpt-4o-mini"                     # 可选
 
-# 默认阈值 0.4（AIGC > 40% 的段落被润色）
+# 润色模型 API（可与检测模型不同；留空则复用 OPENAI_*）
+export REFINER_API_KEY="your-refiner-key"
+export REFINER_BASE_URL="https://api.deepseek.com/v1" # 可选
+export REFINER_MODEL="deepseek-chat"                  # 可选
+
+# 默认阈值 0.4（AIGC > 40% 的段落进入循环润色）
 uv run python main.py refine 论文.docx
 
 # 更严格的阈值
 uv run python main.py refine 论文.docx --threshold 0.3
+
+# 单段最多循环 3 轮，并发复测 4 个段落
+uv run python main.py refine 论文.docx --max-rounds 3 --detect-concurrency 4
+
+# 命令行临时指定润色模型
+uv run python main.py refine 论文.docx \
+  --refiner-api-base https://api.deepseek.com/v1 \
+  --refiner-api-key "$DEEPSEEK_API_KEY" \
+  --refiner-model deepseek-chat
 
 # 跳过复测
 uv run python main.py refine 论文.docx --no-recheck
@@ -83,12 +98,12 @@ uv run python main.py refine 论文.docx --no-recheck
 **refine 工作流：**
 
 1. 提取文档段落
-2. 五引擎融合逐段检测
+2. 六引擎融合逐段检测
 3. 自动分类并选择润色策略：
    - `refine_cn` — 表达润色：修复语病、去除口语，克制修改
    - `deai_cn` — 去 AI 味：消除套话、增加个人化表达、细节具体化
    - `deai_en` — 英文去 AI 化：重写为自然学术表达
-4. 复测验证，计算 AIGC 率降幅
+4. 对每个高风险段落执行“润色 → 检测 → 未达标继续调整”的独立循环
 5. 输出报告 + 润色后 DOCX
 
 **输出文件：**
@@ -114,6 +129,41 @@ export OPENAI_MODEL="gpt-4o-mini"
 
 支持任何 OpenAI 兼容 API：OpenAI、vLLM、Ollama、LiteLLM、SGLang、DeepSeek 等。
 
+### 润色模型 API
+
+`refine` 可以使用不同的大模型分别负责检测和润色：
+
+```yaml
+openai_api:
+  api_base: "https://token-plan-cn.xiaomimimo.com/v1"
+  api_key: "${OPENAI_API_KEY}"
+  model: "mimo-v2.5"
+  strategy: "perplexity"
+
+refiner_api:
+  api_base: "https://api.deepseek.com/v1"
+  api_key: "${REFINER_API_KEY}"
+  model: "deepseek-chat"
+  temperature: 0.3
+```
+
+环境变量优先级：
+
+```bash
+# 检测模型
+export OPENAI_API_KEY="..."
+export OPENAI_BASE_URL="..."
+export OPENAI_MODEL="..."
+
+# 润色模型
+export REFINER_API_KEY="..."
+export REFINER_BASE_URL="..."
+export REFINER_MODEL="..."
+export REFINER_TEMPERATURE="0.3"
+```
+
+如果 `refiner_api` 和 `REFINER_*` 都没有配置，润色会回退复用 `openai_api`。
+
 ### 引擎权重与阈值
 
 编辑 `configs/default.yaml`：
@@ -127,6 +177,7 @@ engine:
     openai_weight: 0.25
     binoculars_weight: 0.25
     local_logprob_weight: 0.0
+    lastde_weight: 0.0
 
 threshold:
   aigc_threshold: 0.5
@@ -271,13 +322,29 @@ for r in results:
 ```python
 from core.refiner import RefinementEngine, generate_refinement_report, export_refined_docx
 
-refiner = RefinementEngine(api_key="sk-...", model="gpt-4o-mini")
+refiner = RefinementEngine(
+    api_base="https://api.deepseek.com/v1",
+    api_key="sk-...",
+    model="deepseek-chat",
+    temperature=0.3,
+    concurrency=8,
+)
 
 # 单段润色
 refined, note = refiner.refine_paragraph("综上所述，...", strategy="deai_cn")
 
 # 批量润色
 ref_results = refiner.refine_batch(paragraphs, detection_results, score_threshold=0.4)
+
+# 循环润色：每段润色后立即复测，未达标继续调整
+ref_results = await refiner.refine_batch_iterative_async(
+    paragraphs,
+    detection_results,
+    detect_fn=engine.detect_single,
+    score_threshold=0.4,
+    max_rounds=3,
+    detect_concurrency=4,
+)
 
 # 生成报告
 generate_refinement_report(ref_results, "报告.txt")

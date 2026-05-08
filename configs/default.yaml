@@ -3,11 +3,11 @@
 engine:
   default: "ensemble"
   ensemble:
-    fengci_weight: 0.10
-    hc3_weight: 0.10
-    openai_weight: 0.25
-    binoculars_weight: 0.25
-    lastde_weight: 0.30
+    fengci_weight: 0.0
+    hc3_weight: 0.0
+    openai_weight: 0.30
+    binoculars_weight: 0.30
+    lastde_weight: 0.40
     # 默认不启用本地大模型；显式配置模型并把权重调高后才参与 ensemble。
     local_logprob_weight: 0.0
 
@@ -23,6 +23,13 @@ openai_api:
   api_key: ""
   model: "gpt-4o-mini"
   strategy: "perplexity"
+
+# 润色模型 API（留空则复用 openai_api；也可通过 REFINER_API_KEY / REFINER_BASE_URL / REFINER_MODEL 设置）
+refiner_api:
+  api_base: ""
+  api_key: ""
+  model: ""
+  temperature: 0.3
 
 # Binoculars API（留空则复用 openai_api 配置）
 binoculars:
