@@ -1,6 +1,6 @@
 """
 核心检测引擎 - 多引擎融合（自包含版）
-支持 FengCi0 / HC3+m3e / OpenAI 兼容 API / Binoculars / Local Logprob
+支持 FengCi0 / HC3+m3e / OpenAI 兼容 API / Binoculars / Local Logprob / Lastde
 所有引擎代码已内联，无需克隆外部仓库。
 """
 import logging
@@ -12,6 +12,7 @@ from .hc3_adapter import HC3Adapter
 from .openai_adapter import OpenAICompatibleAPIDetector
 from .binoculars_adapter import BinocularsAPIDetector
 from .local_logprob_adapter import LocalLogprobDetector
+from .lastde_adapter import LastdeAdapter
 from .progress import progress_iter
 
 logger = logging.getLogger(__name__)
@@ -20,10 +21,10 @@ logger = logging.getLogger(__name__)
 class DetectionEngine:
     """
     AIGC 检测引擎。
-    模式: fengci / hc3 / openai / binoculars / local_logprob / ensemble
+    模式: fengci / hc3 / openai / binoculars / local_logprob / lastde / ensemble
     """
 
-    ENGINE_NAMES = ("fengci", "hc3", "openai", "binoculars", "local_logprob")
+    ENGINE_NAMES = ("fengci", "hc3", "openai", "binoculars", "local_logprob", "lastde")
 
     def __init__(
         self,
@@ -37,6 +38,7 @@ class DetectionEngine:
         openai_weight: float = 0.25,
         binoculars_weight: float = 0.25,
         local_logprob_weight: float = 0.0,
+        lastde_weight: float = 0.0,
         # 阈值
         aigc_threshold: float = 0.5,
         # OpenAI 兼容 API
@@ -55,6 +57,11 @@ class DetectionEngine:
         local_logprob_stride: int = 256,
         local_logprob_method: str = "logrank",
         local_logprob_local_files_only: bool = False,
+        # Lastde
+        lastde_embed_size: int = 3,
+        lastde_epsilon_factor: float = 10.0,
+        lastde_tau_prime: int = 5,
+        lastde_agg: str = "std",
         api_concurrency: int = 1,
     ):
         self.mode = mode
@@ -64,6 +71,7 @@ class DetectionEngine:
             "openai": openai_weight,
             "binoculars": binoculars_weight,
             "local_logprob": local_logprob_weight,
+            "lastde": lastde_weight,
         }
         if mode in self.weights and self.weights[mode] <= 0:
             self.weights[mode] = 1.0
@@ -75,6 +83,7 @@ class DetectionEngine:
         self.openai: Optional[OpenAICompatibleAPIDetector] = None
         self.binoculars: Optional[BinocularsAPIDetector] = None
         self.local_logprob: Optional[LocalLogprobDetector] = None
+        self.lastde: Optional[LastdeAdapter] = None
 
         # FengCi0
         if mode in ("fengci", "ensemble"):
@@ -139,6 +148,23 @@ class DetectionEngine:
                 if mode == "local_logprob":
                     raise RuntimeError("Local Logprob 引擎不可用")
 
+        # Lastde (ICLR 2025)
+        if mode == "lastde" or (mode == "ensemble" and lastde_weight > 0):
+            self.lastde = LastdeAdapter(
+                api_base=openai_api_base or "https://api.openai.com/v1",
+                api_key=openai_api_key or "",
+                model=openai_model,
+                embed_size=lastde_embed_size,
+                epsilon_factor=lastde_epsilon_factor,
+                tau_prime=lastde_tau_prime,
+                agg=lastde_agg,
+            )
+            if not self.lastde.available:
+                logger.warning("Lastde 引擎不可用")
+                self.weights["lastde"] = 0
+                if mode == "lastde":
+                    raise RuntimeError("Lastde 引擎不可用")
+
         if mode == "ensemble":
             if sum(1 for v in self.weights.values() if v > 0) == 0:
                 raise RuntimeError("ensemble 模式下没有可用的检测引擎")
@@ -182,7 +208,7 @@ class DetectionEngine:
 
         # 先跑支持批量的引擎
         batch_results = {}
-        for name in ("hc3", "openai", "binoculars", "local_logprob"):
+        for name in ("hc3", "openai", "binoculars", "local_logprob", "lastde"):
             obj = getattr(self, name, None)
             if not obj or not obj.available or self.weights.get(name, 0) <= 0:
                 continue
@@ -207,7 +233,7 @@ class DetectionEngine:
                     scores.append(r["aigc_score"])
                     weights_list.append(self.weights["fengci"])
 
-            for name in ("hc3", "openai", "binoculars", "local_logprob"):
+            for name in ("hc3", "openai", "binoculars", "local_logprob", "lastde"):
                 if name in batch_results and batch_results[name][i].get("aigc_score") is not None:
                     r = batch_results[name][i]
                     engine_results[name] = r

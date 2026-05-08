@@ -3,16 +3,18 @@
 engine:
   default: "ensemble"
   ensemble:
-    fengci_weight: 0.30
-    hc3_weight: 0.20
+    fengci_weight: 0.10
+    hc3_weight: 0.10
     openai_weight: 0.25
     binoculars_weight: 0.25
+    lastde_weight: 0.30
     # 默认不启用本地大模型；显式配置模型并把权重调高后才参与 ensemble。
     local_logprob_weight: 0.0
 
+
 # OpenAI 兼容 API（也可通过环境变量 OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL 设置）
 # OPENAI_API_BASE 也可作为 OPENAI_BASE_URL 的兼容别名。
-# 旧的 MIMO_API_KEY / MIMO_API_BASE / MIMO_MODEL 仍可作为兼容回退。
+
 
 
 
@@ -36,6 +38,13 @@ local_logprob:
   stride: 256
   method: "logrank"  # logrank / perplexity
   local_files_only: false
+
+# Lastde 多尺度分布熵检测器 (ICLR 2025)
+lastde:
+  embed_size: 3          # orbit 嵌入维度 (s)
+  epsilon_factor: 10.0   # ε = epsilon_factor * n_tokens
+  tau_prime: 5           # 最大尺度 (τ')
+  agg: "std"             # 聚合函数: std / expstd / 2norm / range / exprange
 
 # 文本提取
 extraction:

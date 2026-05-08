@@ -75,6 +75,12 @@ DEFAULT_CONFIG = {
         "method": "logrank",
         "local_files_only": False,
     },
+    "lastde": {
+        "embed_size": 3,
+        "epsilon_factor": 10.0,
+        "tau_prime": 5,
+        "agg": "std",
+    },
     "extraction": {
         "min_paragraph_length": 30,
         "skip_headings": True,
@@ -137,6 +143,7 @@ def build_engine(config, args):
     openai_cfg = config.get("openai_api", {})
     bino_cfg = config.get("binoculars", {})
     local_cfg = config.get("local_logprob", {})
+    lastde_cfg = config.get("lastde", {})
     perf_cfg = config.get("performance", {})
     ensemble = config["engine"]["ensemble"]
     models = _models_dir()
@@ -155,6 +162,7 @@ def build_engine(config, args):
         openai_weight=ensemble.get("openai_weight", 0.25),
         binoculars_weight=ensemble.get("binoculars_weight", 0.25),
         local_logprob_weight=ensemble.get("local_logprob_weight", 0.0),
+        lastde_weight=ensemble.get("lastde_weight", 0.0),
         aigc_threshold=threshold,
         openai_api_base=openai_cfg.get("api_base"),
         openai_api_key=openai_cfg.get("api_key"),
@@ -169,6 +177,10 @@ def build_engine(config, args):
         local_logprob_stride=local_cfg.get("stride", 256),
         local_logprob_method=local_cfg.get("method", "logrank"),
         local_logprob_local_files_only=local_cfg.get("local_files_only", False),
+        lastde_embed_size=lastde_cfg.get("embed_size", 3),
+        lastde_epsilon_factor=lastde_cfg.get("epsilon_factor", 10.0),
+        lastde_tau_prime=lastde_cfg.get("tau_prime", 5),
+        lastde_agg=lastde_cfg.get("agg", "std"),
         api_concurrency=perf_cfg.get("api_concurrency", 1),
     )
 
@@ -302,6 +314,7 @@ def cmd_status(args, config):
         "openai": "OpenAI 兼容 API logprobs",
         "binoculars": "Binoculars 双模型",
         "local_logprob": "Local Logprob 本地模型",
+        "lastde": "Lastde 多尺度熵 (ICLR'25)",
     }
     for name, label in labels.items():
         avail = s.get(f"{name}_available", False)
@@ -509,7 +522,7 @@ def main():
     parser.add_argument("-v", "--verbose", action="store_true", help="逐段详情输出")
 
     sub = parser.add_subparsers(dest="command", help="子命令")
-    choices = ["fengci", "hc3", "openai", "binoculars", "local_logprob", "ensemble"]
+    choices = ["fengci", "hc3", "openai", "binoculars", "local_logprob", "lastde", "ensemble"]
 
     p = sub.add_parser("detect", help="检测单个文件")
     p.add_argument("file", help="待检测文件（.docx / .md / .txt）")
