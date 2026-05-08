@@ -63,6 +63,14 @@ uv run python main.py eval examples/eval_sample.jsonl --engine fengci
 uv run python main.py status
 ```
 
+### WebUI
+
+```bash
+uv run python webui.py --host 127.0.0.1 --port 8765
+```
+
+打开 `http://127.0.0.1:8765` 后可直接上传 `.docx` / `.md` / `.txt`，也可以粘贴文本进行检测。WebUI 复用 `configs/default.yaml` 和现有检测引擎配置。
+
 ### 降 AIGC 率（refine）
 
 ```bash
