@@ -38,6 +38,38 @@ ENGINE_LABELS = {
 }
 
 
+class JobCancelled(RuntimeError):
+    """Raised when a WebUI job has been cancelled by the user."""
+
+
+def is_job_cancelled(job_id: str | None) -> bool:
+    if not job_id:
+        return False
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        return bool(job and job.get("cancel_requested"))
+
+
+def raise_if_cancelled(job_id: str | None):
+    if is_job_cancelled(job_id):
+        raise JobCancelled("任务已中断")
+
+
+def mark_job_cancel_requested(job_id: str):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            return None
+        if job.get("state") in ("done", "error", "canceled"):
+            return dict(job)
+        job["cancel_requested"] = True
+        job["state"] = "canceling"
+        job["stage"] = "正在中断"
+        job["message"] = "等待当前步骤结束"
+        job["updated_at"] = time.time()
+        return dict(job)
+
+
 def split_text_to_paragraphs(text: str, min_length: int = 30):
     raw = re.split(r"\n\s*\n", text)
     if len(raw) <= 1:
@@ -118,8 +150,14 @@ def update_job(job_id: str, **fields):
         job = JOBS.get(job_id)
         if not job:
             return
+        if job.get("state") == "canceling" and fields.get("state") == "running":
+            fields.pop("state", None)
         job.update(fields)
         job["updated_at"] = time.time()
+
+
+def finish_cancelled_job(job_id: str, message: str = "任务已中断"):
+    update_job(job_id, state="canceled", stage="已中断", progress=100, error=None, message=message)
 
 
 def read_web_config():
@@ -180,6 +218,7 @@ def create_job(title: str, worker, *args):
             "message": "",
             "result": None,
             "error": None,
+            "cancel_requested": False,
             "created_at": now,
             "updated_at": now,
         }
@@ -189,15 +228,18 @@ def create_job(title: str, worker, *args):
 
 
 def run_detection(paragraphs, threshold: float | None, job_id: str | None = None):
+    raise_if_cancelled(job_id)
     if job_id:
         update_job(job_id, state="running", stage="初始化引擎", progress=20, message=f"段落数 {len(paragraphs)}")
     config = load_config(os.path.join(PROJECT_ROOT, "configs", "default.yaml"))
     args = argparse.Namespace(engine=None, threshold=threshold)
     engine = build_engine(config, args)
+    raise_if_cancelled(job_id)
     if job_id:
         update_job(job_id, stage="执行检测", progress=42, message=f"引擎 {engine.mode}")
     texts = [p["text"] for p in paragraphs]
     results = engine.detect_batch(texts, show_progress=False)
+    raise_if_cancelled(job_id)
     if job_id:
         update_job(job_id, stage="汇总结果", progress=88, message="生成摘要和逐段结果")
     engine_status = engine.get_status()
@@ -297,14 +339,17 @@ async def refine_paragraphs_async(paragraphs, initial_results, engine, config, o
         score_threshold=threshold,
         max_rounds=max_rounds,
         detect_concurrency=detect_concurrency,
+        should_cancel=lambda: is_job_cancelled(job_id),
         show_progress=False,
     )
+    raise_if_cancelled(job_id)
     update_job(job_id, stage="汇总润色结果", progress=92)
     return results
 
 
 def run_text_job(job_id: str, payload: dict):
     try:
+        raise_if_cancelled(job_id)
         update_job(job_id, state="running", stage="解析文本", progress=8)
         text = payload.get("text", "")
         min_length = int(payload.get("min_length") or 30)
@@ -317,12 +362,15 @@ def run_text_job(job_id: str, payload: dict):
             job_id=job_id,
         )
         update_job(job_id, state="done", stage="完成", progress=100, message="检测完成", result=result)
+    except JobCancelled:
+        finish_cancelled_job(job_id)
     except Exception as exc:
         update_job(job_id, state="error", stage="失败", progress=100, error=str(exc), message=str(exc))
 
 
 def run_text_refine_job(job_id: str, payload: dict):
     try:
+        raise_if_cancelled(job_id)
         update_job(job_id, state="running", stage="解析文本", progress=6)
         text = payload.get("text", "")
         min_length = int(payload.get("min_length") or 30)
@@ -331,10 +379,13 @@ def run_text_refine_job(job_id: str, payload: dict):
             raise ValueError("没有提取到有效段落")
         config = load_config(str(CONFIG_PATH))
         args = argparse.Namespace(engine=None, threshold=float(payload["threshold"]) if payload.get("threshold") not in (None, "") else None)
+        raise_if_cancelled(job_id)
         update_job(job_id, stage="初始化检测引擎", progress=16, message=f"段落数 {len(paragraphs)}")
         engine = build_engine(config, args)
+        raise_if_cancelled(job_id)
         update_job(job_id, stage="初检", progress=30, message=f"引擎 {engine.mode}")
         initial_results = engine.detect_batch([p["text"] for p in paragraphs], show_progress=False)
+        raise_if_cancelled(job_id)
         initial_summary = summarize(paragraphs, initial_results, engine.get_status())
         refinement_results = asyncio.run(refine_paragraphs_async(paragraphs, initial_results, engine, config, payload, job_id))
         result = {
@@ -344,6 +395,8 @@ def run_text_refine_job(job_id: str, payload: dict):
             "mode": "refine",
         }
         update_job(job_id, state="done", stage="完成", progress=100, message="润色完成", result=result)
+    except JobCancelled:
+        finish_cancelled_job(job_id)
     except Exception as exc:
         update_job(job_id, state="error", stage="失败", progress=100, error=str(exc), message=str(exc))
 
@@ -351,6 +404,7 @@ def run_text_refine_job(job_id: str, payload: dict):
 def run_file_job(job_id: str, fields: dict, uploaded: dict):
     tmp_path = None
     try:
+        raise_if_cancelled(job_id)
         update_job(job_id, state="running", stage="保存上传文件", progress=6, message=uploaded["filename"])
         suffix = Path(uploaded["filename"]).suffix.lower()
         if suffix not in (".docx", ".md", ".txt"):
@@ -359,6 +413,7 @@ def run_file_job(job_id: str, fields: dict, uploaded: dict):
             tmp.write(uploaded["content"])
             tmp_path = tmp.name
 
+        raise_if_cancelled(job_id)
         update_job(job_id, stage="提取段落", progress=12, message=uploaded["filename"])
         config = load_config(os.path.join(PROJECT_ROOT, "configs", "default.yaml"))
         paragraphs = extract_paragraphs(tmp_path, config)
@@ -372,6 +427,8 @@ def run_file_job(job_id: str, fields: dict, uploaded: dict):
         )
         result["filename"] = uploaded["filename"]
         update_job(job_id, state="done", stage="完成", progress=100, message="检测完成", result=result)
+    except JobCancelled:
+        finish_cancelled_job(job_id)
     except Exception as exc:
         update_job(job_id, state="error", stage="失败", progress=100, error=str(exc), message=str(exc))
     finally:
@@ -385,6 +442,7 @@ def run_file_job(job_id: str, fields: dict, uploaded: dict):
 def run_file_refine_job(job_id: str, fields: dict, uploaded: dict):
     tmp_path = None
     try:
+        raise_if_cancelled(job_id)
         update_job(job_id, state="running", stage="保存上传文件", progress=5, message=uploaded["filename"])
         suffix = Path(uploaded["filename"]).suffix.lower()
         if suffix not in (".docx", ".md", ".txt"):
@@ -393,16 +451,20 @@ def run_file_refine_job(job_id: str, fields: dict, uploaded: dict):
             tmp.write(uploaded["content"])
             tmp_path = tmp.name
         config = load_config(str(CONFIG_PATH))
+        raise_if_cancelled(job_id)
         update_job(job_id, stage="提取段落", progress=10, message=uploaded["filename"])
         paragraphs = extract_paragraphs(tmp_path, config)
         if not paragraphs:
             raise ValueError("没有提取到有效段落")
         threshold = fields.get("threshold")
         args = argparse.Namespace(engine=None, threshold=float(threshold) if threshold not in (None, "") else None)
+        raise_if_cancelled(job_id)
         update_job(job_id, stage="初始化检测引擎", progress=16, message=f"段落数 {len(paragraphs)}")
         engine = build_engine(config, args)
+        raise_if_cancelled(job_id)
         update_job(job_id, stage="初检", progress=30, message=f"引擎 {engine.mode}")
         initial_results = engine.detect_batch([p["text"] for p in paragraphs], show_progress=False)
+        raise_if_cancelled(job_id)
         initial_summary = summarize(paragraphs, initial_results, engine.get_status())
         refinement_results = asyncio.run(refine_paragraphs_async(paragraphs, initial_results, engine, config, fields, job_id))
         result = {
@@ -413,6 +475,8 @@ def run_file_refine_job(job_id: str, fields: dict, uploaded: dict):
             "mode": "refine",
         }
         update_job(job_id, state="done", stage="完成", progress=100, message="润色完成", result=result)
+    except JobCancelled:
+        finish_cancelled_job(job_id)
     except Exception as exc:
         update_job(job_id, state="error", stage="失败", progress=100, error=str(exc), message=str(exc))
     finally:
@@ -514,6 +578,16 @@ class WebUIHandler(BaseHTTPRequestHandler):
                 return
             body = self.rfile.read(length)
             parsed = urlparse(self.path)
+            if parsed.path.startswith("/api/jobs/") and parsed.path.endswith("/cancel"):
+                parts = parsed.path.strip("/").split("/")
+                job_id = parts[2] if len(parts) == 4 else ""
+                job = mark_job_cancel_requested(job_id)
+                if not job:
+                    self._send_json({"error": "任务不存在"}, status=404)
+                    return
+                self._send_json(job)
+                return
+
             if parsed.path == "/api/detect-text":
                 payload = json.loads(body.decode("utf-8"))
                 if not payload.get("text", "").strip():

@@ -3,6 +3,7 @@ const state = {
   file: null,
   result: null,
   polling: null,
+  currentJobId: null,
   config: null,
 };
 
@@ -19,6 +20,7 @@ const progressFill = $("progressFill");
 const progressText = $("progressText");
 const runStage = $("runStage");
 const runMessage = $("runMessage");
+const cancelJobBtn = $("cancelJobBtn");
 
 function setStatus(text, mode = "") {
   statusPill.textContent = text;
@@ -121,7 +123,7 @@ function renderRows() {
       <td>${row.method || "-"}</td>
       <td class="engine-cell">${renderEngineScores(row.engine_scores || [])}</td>
       <td class="refine-cell">${renderRefineInfo(row)}</td>
-      <td class="paragraph-cell">${escapeHtml(row.text)}</td>
+      <td class="paragraph-cell">${renderParagraph(row)}</td>
     </tr>
   `).join("");
 }
@@ -149,10 +151,57 @@ function renderRefineInfo(row) {
   const before = row.aigc_before === null || row.aigc_before === undefined ? "-" : `${(row.aigc_before * 100).toFixed(1)}%`;
   const after = row.aigc_after === null || row.aigc_after === undefined ? "-" : `${(row.aigc_after * 100).toFixed(1)}%`;
   const changed = row.changed ? "已改" : "未改";
-  const refined = row.refined && row.refined !== row.text
-    ? `<details><summary>${changed} / ${row.rounds || 0}轮 / ${before}→${after}</summary><div class="refined-text">${escapeHtml(row.refined)}</div></details>`
-    : `${changed} / ${row.rounds || 0}轮 / ${before}→${after}`;
-  return refined;
+  return `${changed} / ${row.rounds || 0}轮 / ${before}→${after}`;
+}
+
+function renderParagraph(row) {
+  const original = row.text || "";
+  if (!row.refined || row.refined === original) {
+    return `<div class="paragraph-text">${escapeHtml(original)}</div>`;
+  }
+  return `
+    <div class="paragraph-text">${escapeHtml(original)}</div>
+    <details class="diff-details">
+      <summary>展开 Diff</summary>
+      <div class="diff-view">${renderDiff(original, row.refined)}</div>
+    </details>
+  `;
+}
+
+function tokenizeText(text) {
+  if (window.Intl && Intl.Segmenter) {
+    const segmenter = new Intl.Segmenter("zh", { granularity: "word" });
+    return Array.from(segmenter.segment(text), (item) => item.segment);
+  }
+  return Array.from(text);
+}
+
+function renderDiff(before, after) {
+  const left = tokenizeText(before);
+  const right = tokenizeText(after);
+  const rows = Array.from({ length: left.length + 1 }, () => Array(right.length + 1).fill(0));
+  for (let i = left.length - 1; i >= 0; i -= 1) {
+    for (let j = right.length - 1; j >= 0; j -= 1) {
+      rows[i][j] = left[i] === right[j] ? rows[i + 1][j + 1] + 1 : Math.max(rows[i + 1][j], rows[i][j + 1]);
+    }
+  }
+  const parts = [];
+  let i = 0;
+  let j = 0;
+  while (i < left.length || j < right.length) {
+    if (i < left.length && j < right.length && left[i] === right[j]) {
+      parts.push(`<span>${escapeHtml(left[i])}</span>`);
+      i += 1;
+      j += 1;
+    } else if (j < right.length && (i === left.length || rows[i][j + 1] >= rows[i + 1][j])) {
+      parts.push(`<ins>${escapeHtml(right[j])}</ins>`);
+      j += 1;
+    } else if (i < left.length) {
+      parts.push(`<del>${escapeHtml(left[i])}</del>`);
+      i += 1;
+    }
+  }
+  return parts.join("");
 }
 
 function escapeHtml(text) {
@@ -173,6 +222,8 @@ async function submitJob(url, options) {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "请求失败");
     if (!data.job_id) throw new Error("服务端未返回任务 ID");
+    state.currentJobId = data.job_id;
+    cancelJobBtn.disabled = false;
     await pollJob(data.job_id);
   } catch (error) {
     setStatus("失败", "error");
@@ -180,6 +231,8 @@ async function submitJob(url, options) {
     runMessage.textContent = error.message;
     resultRows.innerHTML = `<tr class="empty-row"><td colspan="7">${escapeHtml(error.message)}</td></tr>`;
     toggleButtons(false);
+    state.currentJobId = null;
+    cancelJobBtn.disabled = true;
   }
 }
 
@@ -195,10 +248,20 @@ async function pollJob(jobId) {
         if (job.state === "done") {
           clearInterval(state.polling);
           state.polling = null;
+          state.currentJobId = null;
           applyResult(job.result);
           setStatus("完成");
           toggleButtons(false);
           resolve(job.result);
+        } else if (job.state === "canceled") {
+          clearInterval(state.polling);
+          state.polling = null;
+          state.currentJobId = null;
+          setStatus("已中断");
+          runStage.textContent = "已中断";
+          runMessage.textContent = job.message || "任务已中断";
+          toggleButtons(false);
+          resolve(null);
         } else if (job.state === "error") {
           clearInterval(state.polling);
           state.polling = null;
@@ -220,6 +283,25 @@ async function pollJob(jobId) {
 function toggleButtons(disabled) {
   $("detectFileBtn").disabled = disabled;
   $("detectTextBtn").disabled = disabled;
+  cancelJobBtn.disabled = !disabled || !state.currentJobId;
+}
+
+async function cancelCurrentJob() {
+  if (!state.currentJobId) return;
+  cancelJobBtn.disabled = true;
+  setStatus("中断中", "busy");
+  runStage.textContent = "正在中断";
+  runMessage.textContent = "等待当前步骤结束";
+  try {
+    const response = await fetch(`/api/jobs/${state.currentJobId}/cancel`, { method: "POST" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "中断失败");
+    updateProgress(data);
+  } catch (error) {
+    setStatus("中断失败", "error");
+    runMessage.textContent = error.message;
+    cancelJobBtn.disabled = false;
+  }
 }
 
 async function detectText() {
@@ -319,6 +401,7 @@ $("detectFileBtn").addEventListener("click", detectFile);
 $("exportJsonBtn").addEventListener("click", exportJson);
 $("exportCsvBtn").addEventListener("click", exportCsv);
 $("saveConfigBtn").addEventListener("click", saveConfig);
+cancelJobBtn.addEventListener("click", cancelCurrentJob);
 $("taskMode").addEventListener("change", syncMode);
 labelFilter.addEventListener("change", renderRows);
 filterInput.addEventListener("input", renderRows);

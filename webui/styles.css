@@ -286,7 +286,7 @@ textarea:focus {
 
 .run-panel {
   display: grid;
-  grid-template-columns: minmax(180px, 280px) minmax(0, 1fr) 52px;
+  grid-template-columns: minmax(180px, 280px) minmax(0, 1fr) 52px auto;
   gap: 12px;
   align-items: center;
   margin-bottom: 14px;
@@ -337,6 +337,24 @@ textarea:focus {
   color: var(--muted);
   font-size: 13px;
   text-align: right;
+}
+
+.cancel-btn {
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid rgba(180, 35, 24, 0.28);
+  border-radius: 6px;
+  background: #fff7f7;
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cancel-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .metric {
@@ -510,23 +528,52 @@ th {
   line-height: 1.55;
 }
 
+.paragraph-text {
+  white-space: pre-wrap;
+}
+
 .refine-cell {
   min-width: 180px;
   max-width: 300px;
 }
 
-.refine-cell details {
-  cursor: pointer;
+.diff-details {
+  margin-top: 10px;
 }
 
-.refined-text {
+.diff-details summary {
+  cursor: pointer;
+  color: var(--accent-2);
+  font-weight: 650;
+}
+
+.diff-view {
   margin-top: 8px;
-  padding: 8px;
+  padding: 10px;
   border-radius: 6px;
+  border: 1px solid var(--line);
   background: #f8fafc;
   color: var(--text);
   line-height: 1.55;
   white-space: pre-wrap;
+}
+
+.diff-view ins,
+.diff-view del {
+  padding: 1px 2px;
+  border-radius: 3px;
+  text-decoration: none;
+}
+
+.diff-view ins {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.diff-view del {
+  background: #fee2e2;
+  color: #991b1b;
+  text-decoration: line-through;
 }
 
 .engine-cell {

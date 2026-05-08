@@ -367,10 +367,13 @@ class RefinementEngine:
         detect_semaphore: asyncio.Semaphore,
         client,
         detect_fn: Callable[[str], Dict],
+        should_cancel: Optional[Callable[[], bool]] = None,
     ) -> Dict:
         """单段循环润色：润色一次就复测一次，达标或到达轮数上限即停止。"""
         text = para['text']
         aigc_score = score_info.get('aigc_score')
+        if should_cancel and should_cancel():
+            raise RuntimeError("任务已中断")
 
         if aigc_score is not None and aigc_score <= score_threshold:
             return {
@@ -414,6 +417,8 @@ class RefinementEngine:
         history = []
 
         for round_no in range(1, max_rounds + 1):
+            if should_cancel and should_cancel():
+                raise RuntimeError("任务已中断")
             if round_no == 1:
                 prompt = PROMPTS[strategy].format(paragraph=current_text)
             else:
@@ -455,6 +460,8 @@ class RefinementEngine:
                 })
                 break
 
+            if should_cancel and should_cancel():
+                raise RuntimeError("任务已中断")
             detect_result = await self._detect_async(refined, detect_fn, detect_semaphore)
             next_score = detect_result.get('aigc_score')
             changed = refined.strip() != current_text.strip()
@@ -511,6 +518,7 @@ class RefinementEngine:
         score_threshold: float = 0.4,
         max_rounds: int = 2,
         detect_concurrency: Optional[int] = None,
+        should_cancel: Optional[Callable[[], bool]] = None,
         show_progress: bool = True,
     ) -> List[Dict]:
         """并发执行“单段润色 -> 单段检测 -> 循环调整”的降重工作流。"""
@@ -531,6 +539,7 @@ class RefinementEngine:
                     detect_semaphore,
                     client,
                     detect_fn,
+                    should_cancel,
                 ),
             ))
             for i, (para, score_info) in enumerate(zip(paragraphs, aigc_scores))
@@ -542,6 +551,8 @@ class RefinementEngine:
             if bar_ctx:
                 with bar_ctx as bar:
                     for task in asyncio.as_completed(tasks):
+                        if should_cancel and should_cancel():
+                            raise RuntimeError("任务已中断")
                         i, result = await task
                         results[i] = result
                         completed += 1
@@ -552,6 +563,8 @@ class RefinementEngine:
                         bar.update(1)
             else:
                 for task in asyncio.as_completed(tasks):
+                    if should_cancel and should_cancel():
+                        raise RuntimeError("任务已中断")
                     i, result = await task
                     results[i] = result
                     completed += 1
@@ -560,7 +573,8 @@ class RefinementEngine:
                 if not task.done():
                     task.cancel()
             raise
-        await client.close()
+        finally:
+            await client.close()
 
         final_results = []
         for i, r in enumerate(results):
