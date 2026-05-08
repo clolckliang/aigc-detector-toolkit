@@ -42,6 +42,7 @@ class OpenAICompatibleAPIDetector:
         window_size: int = 200,
         strategy: str = "perplexity",
         api_concurrency: int = 1,
+        temperature: float = 0,
     ):
         self.api_base = api_base.rstrip('/')
         self.api_key = (
@@ -54,6 +55,7 @@ class OpenAICompatibleAPIDetector:
         self.window_size = window_size
         self.strategy = strategy
         self.api_concurrency = max(1, int(api_concurrency or 1))
+        self.temperature = temperature
         self.available = False
         self.client = None
         self.supports_echo = None
@@ -88,7 +90,7 @@ class OpenAICompatibleAPIDetector:
                     prompt="测试",
                     max_tokens=1,
                     logprobs=1,
-                    temperature=0,
+                    temperature=self.temperature,
                 )
                 data = self._to_dict(resp)
                 # 检查是否返回了 logprobs
@@ -110,7 +112,7 @@ class OpenAICompatibleAPIDetector:
                     max_tokens=1,
                     logprobs=True,
                     top_logprobs=1,
-                    temperature=0,
+                    temperature=self.temperature,
                 )
                 self.available = True
                 self.use_completions = False
@@ -139,7 +141,7 @@ class OpenAICompatibleAPIDetector:
                     prompt=prompt,
                     max_tokens=max_tokens,
                     logprobs=5,
-                    temperature=0,
+                    temperature=self.temperature,
                 )
             else:
                 resp = client.chat.completions.create(
@@ -148,7 +150,7 @@ class OpenAICompatibleAPIDetector:
                     max_tokens=max_tokens,
                     logprobs=True,
                     top_logprobs=5,
-                    temperature=0,
+                    temperature=self.temperature,
                 )
             return self._to_dict(resp)
         except Exception as e:
@@ -278,7 +280,7 @@ class OpenAICompatibleAPIDetector:
                 max_tokens=0,
                 logprobs=5,
                 echo=True,
-                temperature=0,
+                temperature=self.temperature,
             )
             data = self._to_dict(resp)
             choice = data["choices"][0]

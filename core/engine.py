@@ -46,6 +46,7 @@ class DetectionEngine:
         openai_api_key: Optional[str] = None,
         openai_model: str = "gpt-4o-mini",
         openai_strategy: str = "perplexity",
+        openai_temperature: float = 0,
         # Binoculars
         binoculars_api_base: Optional[str] = None,
         binoculars_api_key: Optional[str] = None,
@@ -111,6 +112,7 @@ class DetectionEngine:
                 model=openai_model,
                 strategy=openai_strategy,
                 api_concurrency=self.api_concurrency,
+                temperature=openai_temperature,
             )
             if not self.openai.available:
                 logger.warning("OpenAI 兼容 API 引擎不可用")
@@ -125,6 +127,7 @@ class DetectionEngine:
                 api_key=binoculars_api_key or openai_api_key or "",
                 model=binoculars_model or openai_model,
                 api_concurrency=self.api_concurrency,
+                temperature=openai_temperature,
             )
             if not self.binoculars.available:
                 logger.warning("Binoculars 引擎不可用")
@@ -158,6 +161,7 @@ class DetectionEngine:
                 epsilon_factor=lastde_epsilon_factor,
                 tau_prime=lastde_tau_prime,
                 agg=lastde_agg,
+                temperature=openai_temperature,
             )
             if not self.lastde.available:
                 logger.warning("Lastde 引擎不可用")

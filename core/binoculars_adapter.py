@@ -130,12 +130,14 @@ class BinocularsAPIDetector:
         model: str = "gpt-4o-mini",
         min_text_length: int = 30,
         api_concurrency: int = 1,
+        temperature: float = 0,
     ):
         self.api_base = api_base.rstrip('/')
         self.api_key = api_key
         self.model = model
         self.min_text_length = min_text_length
         self.api_concurrency = max(1, int(api_concurrency or 1))
+        self.temperature = temperature
         self.available = False
         self.client = None
         self._init()
@@ -165,7 +167,7 @@ class BinocularsAPIDetector:
                 max_tokens=1,
                 logprobs=True,
                 top_logprobs=5,
-                temperature=0,
+                temperature=self.temperature,
             )
             self.available = True
             self.has_logprobs = False
@@ -190,7 +192,7 @@ class BinocularsAPIDetector:
                 max_tokens=max_tokens,
                 logprobs=True,
                 top_logprobs=5,
-                temperature=0,
+                temperature=self.temperature,
             )
             return self._to_dict(resp)
         except Exception as e:

@@ -208,6 +208,7 @@ def build_engine(config, args):
         openai_api_key=openai_cfg.get("api_key"),
         openai_model=openai_cfg.get("model", "gpt-4o-mini"),
         openai_strategy=openai_cfg.get("strategy", "perplexity"),
+        openai_temperature=float(openai_cfg.get("temperature", 0)),
         binoculars_api_base=bino_cfg.get("api_base") or openai_cfg.get("api_base"),
         binoculars_api_key=bino_cfg.get("api_key") or openai_cfg.get("api_key"),
         binoculars_model=bino_cfg.get("model") or openai_cfg.get("model", "gpt-4o-mini"),

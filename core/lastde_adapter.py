@@ -169,6 +169,7 @@ class LastdeAdapter:
         tau_prime: int = 5,
         agg: str = "std",
         min_text_length: int = 30,
+        temperature: float = 0,
     ):
         self.api_base = (api_base or "").rstrip("/")
         self.api_key = (
@@ -182,6 +183,7 @@ class LastdeAdapter:
         self.tau_prime = tau_prime
         self.agg = agg
         self.min_text_length = min_text_length
+        self.temperature = temperature
         self.available = False
         self.client = None
 
@@ -204,7 +206,7 @@ class LastdeAdapter:
                 prompt="测试",
                 max_tokens=1,
                 logprobs=1,
-                temperature=0,
+                temperature=self.temperature,
             )
             data = self._to_dict(resp)
             if data.get("choices") and data["choices"][0].get("logprobs"):
@@ -234,7 +236,7 @@ class LastdeAdapter:
                 max_tokens=0,
                 logprobs=1,
                 echo=True,
-                temperature=0,
+                temperature=self.temperature,
             )
             data = self._to_dict(resp)
             choice = data["choices"][0]

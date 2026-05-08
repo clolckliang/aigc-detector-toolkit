@@ -19,16 +19,17 @@ engine:
 
 
 openai_api:
-  api_base: "https://api.openai.com/v1"
-  api_key: ""
-  model: "gpt-4o-mini"
+  api_base: "https://token-plan-cn.xiaomimimo.com/v1"
+  api_key: "tp-coieog8ekddoaylhvsdxxe361fiyi59upsztz72px0kjuwp9"
+  model: "mimo-v2.5"
   strategy: "perplexity"
+  temperature: 1
 
 # 润色模型 API（留空则复用 openai_api；也可通过 REFINER_API_KEY / REFINER_BASE_URL / REFINER_MODEL 设置）
 refiner_api:
-  api_base: ""
-  api_key: ""
-  model: ""
+  api_base: "https://token-plan-cn.xiaomimimo.com/v1"
+  api_key: "tp-coieog8ekddoaylhvsdxxe361fiyi59upsztz72px0kjuwp9"
+  model: "mimo-v2.5"
   temperature: 0.3
 
 # Binoculars API（留空则复用 openai_api 配置）
