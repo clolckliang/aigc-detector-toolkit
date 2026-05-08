@@ -88,7 +88,7 @@ WebUI 支持：
 - 润色结果按段展示 `润色前 → 润色后` 分数和变化值
 - 单段手动修改、单段复检、单段重新润色
 - JSON / CSV 导出，CSV 包含 `score_before`、`score_after`、`score_delta`
-
+![alt text](asset/image.png)
 ### 降 AIGC 率润色
 
 ```bash
