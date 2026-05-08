@@ -93,6 +93,10 @@ class HC3Adapter:
 
             self.available = True
             logger.info("HC3 检测器加载成功")
+        except ModuleNotFoundError as e:
+            missing = getattr(e, "name", None) or str(e)
+            logger.warning("HC3 可选依赖未安装 (%s)，跳过 HC3 引擎；可运行 uv sync --extra hc3 安装", missing)
+            self.available = False
         except Exception as e:
             logger.error("HC3 检测器加载失败: %s", e)
             self.available = False

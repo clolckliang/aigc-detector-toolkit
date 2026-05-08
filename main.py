@@ -101,6 +101,27 @@ DEFAULT_CONFIG = {
 }
 
 
+MODEL_ALIASES = {
+    # Some OpenAI-compatible gateways used "deepseek" as an older shorthand,
+    # but currently require an explicit serving model name.
+    "deepseek": "deepseek-v4-pro",
+}
+
+
+def normalize_model_alias(model):
+    if not isinstance(model, str):
+        return model
+    return MODEL_ALIASES.get(model.strip().lower(), model)
+
+
+def normalize_config(config):
+    for section in ("openai_api", "binoculars", "refiner_api"):
+        cfg = config.get(section)
+        if isinstance(cfg, dict) and cfg.get("model"):
+            cfg["model"] = normalize_model_alias(cfg["model"])
+    return config
+
+
 def load_config(config_path=None):
     import copy
     config = copy.deepcopy(DEFAULT_CONFIG)
@@ -151,7 +172,7 @@ def load_config(config_path=None):
     if os.environ.get("REFINER_TEMPERATURE"):
         config.setdefault("refiner_api", {})["temperature"] = float(os.environ["REFINER_TEMPERATURE"])
 
-    return config
+    return normalize_config(config)
 
 
 def _models_dir():
